@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useStore } from '../store';
@@ -19,11 +19,15 @@ function useWakeLock(active: boolean) {
 export default function Compass() {
   const { groupId, me, members, locations, setMembers, setLocations } = useStore();
   const { heading: deviceHeading, requestPermission } = useOrientation();
-  const geo = useGeolocation(true, 2500);
+  const geo = useGeolocation(true); // watchPosition under the hood
   useWakeLock(true);
 
   const [focused, setFocused] = useState<string | null>(null);
   const [flip, setFlip] = useState(false); // toggle if a device reports inverted heading
+
+  // Throttle Firestore writes
+  const lastWriteRef = useRef(0);
+  const lastSentRef = useRef<{lat:number,lng:number,acc?:number}|null>(null);
 
   // Subscribe to members & locations
   useEffect(() => {
@@ -37,9 +41,25 @@ export default function Compass() {
     return () => { unsubMembers(); unsubLoc(); };
   }, [groupId, setMembers, setLocations]);
 
-  // Write my location whenever geo changes
+  // Write my location whenever geo changes, throttled & deduped
   useEffect(() => {
     if (!groupId || !me || !geo) return;
+    const now = Date.now();
+    const last = lastWriteRef.current;
+    const changed = lastSentRef.current
+      ? haversine({lat: geo.lat, lng: geo.lng}, {lat: lastSentRef.current.lat, lng: lastSentRef.current.lng})
+      : Infinity;
+    const accImproved = lastSentRef.current?.acc != null && geo.accuracy != null
+      ? (lastSentRef.current.acc - geo.accuracy) > 5 // meters
+      : true;
+
+    // Only write at most every 2500ms, and only if we moved >3m OR accuracy improved
+    if (now - last < 2500) return;
+    if (changed < 3 && !accImproved) return;
+
+    lastWriteRef.current = now;
+    lastSentRef.current = { lat: geo.lat, lng: geo.lng, acc: geo.accuracy ?? undefined };
+
     const myRef = doc(db, 'groups', groupId, 'locations', me.uid);
     const expireAt = new Date(Date.now() + 12 * 60 * 60 * 1000);
     setDoc(myRef, {
@@ -59,7 +79,6 @@ export default function Compass() {
         const member = (members as any)[uid];
         if (!member || !loc) return null;
 
-        // Guard against partial writes
         const my = { lat: Number(geo.lat), lng: Number(geo.lng) };
         const their = { lat: Number(loc.lat), lng: Number(loc.lng) };
         if (!Number.isFinite(their.lat) || !Number.isFinite(their.lng)) return null;
@@ -68,7 +87,9 @@ export default function Compass() {
         const bRaw = bearing(my, their);
         const bear = Number.isFinite(bRaw) ? bRaw : 0;
         const age = Date.now() - (loc.updatedAt || 0);
-        return { uid, member, dist, bear, age, accuracy: loc.accuracy };
+        const acc = typeof loc.accuracy === 'number' ? loc.accuracy : undefined;
+
+        return { uid, member, dist, bear, age, accuracy: acc };
       })
       .filter(Boolean)
       .sort((a: any, b: any) => a.dist - b.dist);
@@ -83,10 +104,7 @@ export default function Compass() {
 
     // Standard: friendBearing - myHeading (clockwise degrees)
     let r = (b - effective + 360) % 360;
-
-    // Some devices report inverted rotation; allow quick flip
-    if (flip) r = (360 - r) % 360;
-
+    if (flip) r = (360 - r) % 360; // optional device quirk flip
     return r;
   };
 
@@ -121,29 +139,42 @@ export default function Compass() {
 
           {others.map(o => {
             if (focused && o.uid !== focused) return null;
+
+            // Gating & UX polish
+            const myAcc = geo?.accuracy ?? 0;
+            const theirAcc = o.accuracy ?? 0;
+            const nearThreshold = Math.max(8, myAcc, theirAcc); // snap-to-zero threshold
+            const displayDist = o.dist < nearThreshold ? 0 : o.dist;
+
+            const tooOld = o.age > 15_000;          // hide arrows older than 15s
+            const veryOld = o.age > 30_000;         // mark very stale
+            const tooInaccurate = (o.accuracy ?? 0) > 100; // >100m: not useful
+
+            if (tooOld || tooInaccurate) return null;
+
             const angle = rel(o.bear);
-            const stale = o.age > 30_000; // >30s
-            const dash = stale ? '4,6' : undefined;
             const rot = angle == null ? 0 : angle;
 
-            // TEMP debug (remove later)
-            // console.log('[friend]', o.member?.name, 'bear=', o.bear?.toFixed?.(1),
-            //             'heading=', deviceHeading, 'gps=', geo?.headingFromGPS,
-            //             'rot=', rot);
+            const opacity = displayDist === 0 ? 0.5 : 0.9;
+            const dash = veryOld ? '4,6' : undefined;
 
             return (
               <div key={o.uid} className="absolute left-1/2 top-1/2" style={{ transform: `translate(-50%,-50%) rotate(${rot}deg)` }}>
-                <svg width="300" height="300" viewBox="0 0 300 300" className="opacity-90">
-                  <defs>
-                    <marker id={`arrow-${o.uid}`} markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto-start-reverse">
-                      <path d="M0,0 L6,3 L0,6 Z" fill={o.member.color} />
-                    </marker>
-                  </defs>
-                  <line x1="150" y1="150" x2="150" y2="20" stroke={o.member.color} strokeWidth="6" strokeDasharray={dash} markerEnd={`url(#arrow-${o.uid})`} />
+                <svg width="300" height="300" viewBox="0 0 300 300" style={{ opacity }}>
+                  {/* main line pointing to 12 o'clock; container rotates */}
+                  <line x1="150" y1="150" x2="150" y2="28" stroke={o.member.color} strokeWidth="6" strokeDasharray={dash} />
+
+                  {/* simple triangle arrowhead at the tip (no <defs>/<marker>) */}
+                  <polygon
+                    points="150,12 162,32 138,32"
+                    fill={o.member.color}
+                  />
                 </svg>
+
                 <div className="absolute -top-10 left-1/2 -translate-x-1/2 text-sm" style={{ color: o.member.color }}>
                   <div className="px-2 py-0.5 rounded-full bg-black/40 backdrop-blur">
-                    {o.member.name} · {formatDist(o.dist)}{o.accuracy ? ` · ±${Math.round(o.accuracy)}m` : ''}
+                    {o.member.name} · {displayDist === 0 ? '≈0 m' : formatDist(displayDist)}
+                    {o.accuracy ? ` · ±${Math.round(o.accuracy)}m` : ''}
                   </div>
                 </div>
               </div>

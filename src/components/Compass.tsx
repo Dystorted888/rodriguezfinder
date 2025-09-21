@@ -9,19 +9,10 @@ import { bearing, haversine } from '../utils/geo';
 function useWakeLock(active: boolean) {
   useEffect(() => {
     let lock: any = null;
-    async function run() {
-      try {
-        if ('wakeLock' in navigator && active) {
-          lock = await (navigator as any).wakeLock.request('screen');
-        }
-      } catch {
-        // ignore
-      }
-    }
-    run();
-    return () => {
-      try { lock?.release?.(); } catch {}
-    };
+    (async () => {
+      try { if ('wakeLock' in navigator && active) lock = await (navigator as any).wakeLock.request('screen'); } catch {}
+    })();
+    return () => { try { lock?.release?.(); } catch {} };
   }, [active]);
 }
 
@@ -30,30 +21,29 @@ export default function Compass() {
   const { heading: deviceHeading, requestPermission } = useOrientation();
   const geo = useGeolocation(true, 5000);
   useWakeLock(true);
+
   const [focused, setFocused] = useState<string | null>(null);
+  const [flip, setFlip] = useState(false); // toggle if a device reports inverted heading
 
   // Subscribe to members & locations
   useEffect(() => {
     if (!groupId) return;
     const unsubMembers = onSnapshot(collection(db, 'groups', groupId, 'members'), snap => {
-      const m: any = {}; snap.forEach(d => m[d.id] = d.data());
-      setMembers(m);
+      const m: any = {}; snap.forEach(d => m[d.id] = d.data()); setMembers(m);
     });
     const unsubLoc = onSnapshot(collection(db, 'groups', groupId, 'locations'), snap => {
-      const l: any = {}; snap.forEach(d => l[d.id] = d.data());
-      setLocations(l);
+      const l: any = {}; snap.forEach(d => l[d.id] = d.data()); setLocations(l);
     });
     return () => { unsubMembers(); unsubLoc(); };
   }, [groupId, setMembers, setLocations]);
 
-  // Write my location periodically (whenever geo changes)
+  // Write my location whenever geo changes
   useEffect(() => {
     if (!groupId || !me || !geo) return;
     const myRef = doc(db, 'groups', groupId, 'locations', me.uid);
-    const expireAt = new Date(Date.now() + 12 * 60 * 60 * 1000); // 12h (safe to keep even without TTL)
+    const expireAt = new Date(Date.now() + 12 * 60 * 60 * 1000);
     setDoc(myRef, {
-      lat: geo.lat,
-      lng: geo.lng,
+      lat: geo.lat, lng: geo.lng,
       accuracy: geo.accuracy ?? null,
       updatedAt: Date.now(),
       expireAt
@@ -78,14 +68,21 @@ export default function Compass() {
 
   // Compute relative rotation for an arrow toward bearing `b`
   const rel = (b: number) => {
-    // Prefer device compass; fallback to GPS course when moving (>0.5 m/s)
+    // Prefer magnetometer; if missing, use GPS course when moving (>0.5 m/s)
     const gpsHeading = (geo?.speed && geo.speed > 0.5) ? (geo.headingFromGPS ?? null) : null;
-    const effectiveHeading = deviceHeading ?? gpsHeading;
-    if (effectiveHeading == null) return null;
-    return (b - effectiveHeading + 360) % 360;
+    const effective = deviceHeading ?? gpsHeading;
+    if (effective == null) return null;
+
+    // Standard: friendBearing - myHeading (clockwise degrees)
+    let r = (b - effective + 360) % 360;
+
+    // Some devices report inverted rotation; allow quick flip
+    if (flip) r = (360 - r) % 360;
+
+    return r;
   };
 
-  const formatDist = (m: number) => m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`;
+  const formatDist = (m: number) => (m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`);
 
   const headingStatus = deviceHeading != null
     ? `Compass: ${Math.round(deviceHeading)}°`
@@ -95,14 +92,18 @@ export default function Compass() {
 
   return (
     <div className="p-4 h-full flex flex-col">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <div className="text-sm text-slate-400">
           Group: <span className="font-mono">{groupId}</span>
         </div>
-        <button className="text-sm underline" onClick={requestPermission}>Re-enable compass</button>
-      </div>
-      <div className="text-xs text-slate-400 mt-1">
-        {headingStatus} · members: {Object.keys(members).length} · locs: {Object.keys(locations).length}
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-400 hidden sm:inline">{headingStatus}</span>
+          <button className="text-sm underline" onClick={requestPermission}>Re-enable compass</button>
+          <label className="text-xs flex items-center gap-1">
+            <input type="checkbox" checked={flip} onChange={e => setFlip(e.target.checked)} />
+            Flip
+          </label>
+        </div>
       </div>
 
       <div className="flex-1 grid place-items-center">
@@ -113,7 +114,7 @@ export default function Compass() {
           {others.map(o => {
             if (focused && o.uid !== focused) return null;
             const angle = rel(o.bear);
-            const stale = o.age > 30_000; // >30s old
+            const stale = o.age > 30_000; // >30s
             const dash = stale ? '4,6' : undefined;
             const rot = angle == null ? 0 : angle;
             return (

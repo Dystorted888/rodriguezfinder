@@ -1,63 +1,84 @@
 import { useEffect, useRef, useState } from 'react';
 
+// Low-pass filter so heading doesn't jitter
+function smooth(prev: number | null, next: number, alpha = 0.2) {
+  if (prev == null) return next;
+  let d = next - prev;
+  if (d > 180) d -= 360;
+  if (d < -180) d += 360;
+  return (prev + alpha * d + 360) % 360;
+}
+
+function screenAngle(): number {
+  const so = (screen as any).orientation?.angle;
+  const legacy = (window as any).orientation;
+  const a = typeof so === 'number' ? so : (typeof legacy === 'number' ? legacy : 0);
+  const n = ((Math.round(a / 90) * 90) % 360 + 360) % 360;
+  return n;
+}
+
 export function useOrientation() {
-  const [heading, setHeading] = useState<number | null>(null); // 0..360
+  const [heading, setHeading] = useState<number | null>(null); // 0..360 (0=N)
   const [available, setAvailable] = useState<boolean>(false);
-  const permissionAsked = useRef(false);
+  const last = useRef<number | null>(null);
+  const raf = useRef<number | null>(null);
+  const gotAbs = useRef(false);
 
   useEffect(() => {
-    const hasDO = typeof window !== 'undefined' && 'DeviceOrientationEvent' in window;
-    setAvailable(hasDO);
+    const has = typeof window !== 'undefined' && 'DeviceOrientationEvent' in window;
+    setAvailable(has);
+    if (!has) return;
 
-    if (!hasDO) {
-      // No API in this context (e.g., Android over HTTP IP) -> leave heading null.
-      return;
-    }
-
-    const handler = (ev: DeviceOrientationEvent & { webkitCompassHeading?: number }) => {
+    const update = (alpha: number | null | undefined, webkit: number | undefined) => {
       let h: number | null = null;
-      if (typeof ev.webkitCompassHeading === 'number') {
-        // iOS gives degrees from north
-        h = ev.webkitCompassHeading;
-      } else if (typeof ev.alpha === 'number') {
-        // On some Android builds, we only get a useful value if absolute is true
-        if ((ev as any).absolute) h = (360 - ev.alpha);
+      if (typeof webkit === 'number') {
+        // iOS gives compass degrees clockwise from North
+        h = webkit;
+      } else if (typeof alpha === 'number') {
+        // Generic: convert device alpha to compass-like, then correct for screen orientation
+        const base = (360 - alpha) % 360;
+        h = (base + screenAngle()) % 360;
       }
-      if (h !== null) setHeading((h + 360) % 360);
+      if (h != null) {
+        const s = smooth(last.current, (h + 360) % 360, 0.25);
+        last.current = s;
+        if (raf.current) cancelAnimationFrame(raf.current);
+        raf.current = requestAnimationFrame(() => setHeading(s));
+      }
     };
 
-    // If iOS-style permission API exists, we’ll request it from a user gesture later.
-    // Otherwise, try to attach immediately (Android/others).
-    // @ts-ignore
-    if (typeof (window as any).DeviceOrientationEvent?.requestPermission !== 'function') {
-      window.addEventListener('deviceorientation', handler, true);
-      return () => window.removeEventListener('deviceorientation', handler, true);
-    }
+    const onAbs = (ev: any) => { gotAbs.current = true; update(ev.alpha, ev.webkitCompassHeading); };
+    const onRel = (ev: any) => { if (!gotAbs.current) update(ev.alpha, ev.webkitCompassHeading); };
+
+    window.addEventListener('deviceorientationabsolute', onAbs as any, true);
+    window.addEventListener('deviceorientation', onRel as any, true);
+
+    const onSO = () => {
+      // Nudge to recalc after rotation
+      if (last.current != null) setHeading(((last.current + 0.001) + 360) % 360);
+    };
+    window.addEventListener('orientationchange', onSO);
+
+    return () => {
+      window.removeEventListener('deviceorientationabsolute', onAbs as any, true);
+      window.removeEventListener('deviceorientation', onRel as any, true);
+      window.removeEventListener('orientationchange', onSO);
+      if (raf.current) cancelAnimationFrame(raf.current);
+    };
   }, []);
 
+  // iOS needs a user gesture
   const requestPermission = async () => {
-    const hasDO = typeof window !== 'undefined' && 'DeviceOrientationEvent' in window;
-    if (!hasDO) return; // nothing to do
-
-    // @ts-ignore
-    const req = (window as any).DeviceOrientationEvent?.requestPermission;
-    if (typeof req === 'function') {
-      permissionAsked.current = true;
+    const anyDO: any = (window as any).DeviceOrientationEvent;
+    if (anyDO?.requestPermission) {
       try {
-        const state = await req();
+        const state = await anyDO.requestPermission();
         if (state !== 'granted') throw new Error('Motion permission denied');
-        window.addEventListener('deviceorientation', (ev: any) => {
-          const h = ev?.webkitCompassHeading ?? (ev?.absolute ? (360 - ev.alpha) : null);
-          if (h != null) setHeading((h + 360) % 360);
-        }, true);
       } catch (e) {
         console.warn('Orientation permission error', e);
       }
-    } else {
-      // Non-iOS: nothing special to request; listener already attached if available.
-      return;
     }
   };
 
-  return { heading, requestPermission, available };
+  return { heading, available, requestPermission };
 }

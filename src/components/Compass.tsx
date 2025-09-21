@@ -19,7 +19,7 @@ function useWakeLock(active: boolean) {
 export default function Compass() {
   const { groupId, me, members, locations, setMembers, setLocations } = useStore();
   const { heading: deviceHeading, requestPermission } = useOrientation();
-  const geo = useGeolocation(true, 5000);
+  const geo = useGeolocation(true, 2500);
   useWakeLock(true);
 
   const [focused, setFocused] = useState<string | null>(null);
@@ -65,7 +65,10 @@ export default function Compass() {
       .filter(Boolean)
       .sort((a: any, b: any) => a.dist - b.dist);
   }, [me, geo, locations, members]);
-
+  
+	const bearRaw = bearing({lat: geo.lat, lng: geo.lng}, {lat: loc.lat, lng: loc.lng});
+	const bear = Number.isFinite(bearRaw) ? bearRaw : 0;
+  
   // Compute relative rotation for an arrow toward bearing `b`
   const rel = (b: number) => {
     // Prefer magnetometer; if missing, use GPS course when moving (>0.5 m/s)

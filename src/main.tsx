@@ -4,6 +4,13 @@ import App from './App';
 import './index.css';
 import './service-worker-registration';
 
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  </React.StrictMode>
+);
 
 if (import.meta.env.DEV) {
   window.addEventListener('error', (e) => {

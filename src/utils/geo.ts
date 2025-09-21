@@ -10,11 +10,9 @@ export function bearing(from: { lat: number; lng: number }, to: { lat: number; l
   const φ1 = toRad(from.lat);
   const φ2 = toRad(to.lat);
   const Δλ = toRad(to.lng - from.lng);
-
   const y = Math.sin(Δλ) * Math.cos(φ2);
   const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
-
-  const θ = Math.atan2(y, x); // -π..+π
+  const θ = Math.atan2(y, x);
   return (toDeg(θ) + 360) % 360;
 }
 

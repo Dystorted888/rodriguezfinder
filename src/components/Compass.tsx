@@ -50,21 +50,28 @@ export default function Compass() {
     }, { merge: true });
   }, [groupId, me, geo]);
 
-  const others = useMemo(() => {
-    if (!me || !geo) return [] as any[];
-    return Object.entries(locations)
-      .filter(([uid]) => uid !== me.uid)
-      .map(([uid, loc]: any) => {
-        const member = (members as any)[uid];
-        if (!member || !loc) return null;
-        const dist = haversine({ lat: geo.lat, lng: geo.lng }, { lat: loc.lat, lng: loc.lng });
-        const bear = bearing({ lat: geo.lat, lng: geo.lng }, { lat: loc.lat, lng: loc.lng });
-        const age = Date.now() - (loc.updatedAt || 0);
-        return { uid, member, dist, bear, age, accuracy: loc.accuracy };
-      })
-      .filter(Boolean)
-      .sort((a: any, b: any) => a.dist - b.dist);
-  }, [me, geo, locations, members]);
+ const others = useMemo(() => {
+  if (!me || !geo) return [] as any[];
+  return Object.entries(locations)
+    .filter(([uid]) => uid !== me.uid)
+    .map(([uid, loc]: any) => {
+      const member = (members as any)[uid];
+      if (!member || !loc) return null;
+
+      // Guard against partial writes or malformed docs
+      const my = { lat: geo.lat, lng: geo.lng };
+      const their = { lat: Number(loc.lat), lng: Number(loc.lng) };
+      if (!Number.isFinite(their.lat) || !Number.isFinite(their.lng)) return null;
+
+      const dist = haversine(my, their);
+      const bRaw = bearing(my, their);
+      const bear = Number.isFinite(bRaw) ? bRaw : 0;
+      const age = Date.now() - (loc.updatedAt || 0);
+      return { uid, member, dist, bear, age, accuracy: loc.accuracy };
+    })
+    .filter(Boolean)
+    .sort((a: any, b: any) => a.dist - b.dist);
+}, [me, geo, locations, members]);
   
 	const bearRaw = bearing({lat: geo.lat, lng: geo.lng}, {lat: loc.lat, lng: loc.lng});
 	const bear = Number.isFinite(bearRaw) ? bearRaw : 0;
@@ -120,6 +127,12 @@ export default function Compass() {
             const stale = o.age > 30_000; // >30s
             const dash = stale ? '4,6' : undefined;
             const rot = angle == null ? 0 : angle;
+			
+			// TEMP debug (remove later)
+  console.log('[friend]', o.member?.name, 'bear=', o.bear?.toFixed?.(1),
+              'heading=', deviceHeading, 'gps=', geo?.headingFromGPS,
+              'rot=', rot);
+			
             return (
               <div key={o.uid} className="absolute left-1/2 top-1/2" style={{ transform: `translate(-50%,-50%) rotate(${rot}deg)` }}>
                 <svg width="300" height="300" viewBox="0 0 300 300" className="opacity-90">

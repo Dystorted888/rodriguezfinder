@@ -19,17 +19,13 @@ function useWakeLock(active: boolean) {
 export default function Compass() {
   const { groupId, me, members, locations, setMembers, setLocations } = useStore();
   const { heading: deviceHeading, requestPermission } = useOrientation();
-  const geo = useGeolocation(true); // watchPosition under the hood
+  const geo = useGeolocation(true, 2500);
   useWakeLock(true);
 
   const [focused, setFocused] = useState<string | null>(null);
-  const [flip, setFlip] = useState(false); // toggle if a device reports inverted heading
+  const [flip, setFlip] = useState(false);
 
-  // Throttle Firestore writes
-  const lastWriteRef = useRef(0);
-  const lastSentRef = useRef<{lat:number,lng:number,acc?:number}|null>(null);
-
-  // Subscribe to members & locations
+  // subscribe members & locations
   useEffect(() => {
     if (!groupId) return;
     const unsubMembers = onSnapshot(collection(db, 'groups', groupId, 'members'), snap => {
@@ -41,25 +37,9 @@ export default function Compass() {
     return () => { unsubMembers(); unsubLoc(); };
   }, [groupId, setMembers, setLocations]);
 
-  // Write my location whenever geo changes, throttled & deduped
+  // write my location (on geo change)
   useEffect(() => {
     if (!groupId || !me || !geo) return;
-    const now = Date.now();
-    const last = lastWriteRef.current;
-    const changed = lastSentRef.current
-      ? haversine({lat: geo.lat, lng: geo.lng}, {lat: lastSentRef.current.lat, lng: lastSentRef.current.lng})
-      : Infinity;
-    const accImproved = lastSentRef.current?.acc != null && geo.accuracy != null
-      ? (lastSentRef.current.acc - geo.accuracy) > 5 // meters
-      : true;
-
-    // Only write at most every 2500ms, and only if we moved >3m OR accuracy improved
-    if (now - last < 2500) return;
-    if (changed < 3 && !accImproved) return;
-
-    lastWriteRef.current = now;
-    lastSentRef.current = { lat: geo.lat, lng: geo.lng, acc: geo.accuracy ?? undefined };
-
     const myRef = doc(db, 'groups', groupId, 'locations', me.uid);
     const expireAt = new Date(Date.now() + 12 * 60 * 60 * 1000);
     setDoc(myRef, {
@@ -70,7 +50,7 @@ export default function Compass() {
     }, { merge: true });
   }, [groupId, me, geo]);
 
-  // Build friend list with safe math
+  // compute others
   const others = useMemo(() => {
     if (!me || !geo) return [] as any[];
     return Object.entries(locations)
@@ -95,16 +75,13 @@ export default function Compass() {
       .sort((a: any, b: any) => a.dist - b.dist);
   }, [me, geo, locations, members]);
 
-  // Compute relative rotation for an arrow toward bearing `b`
+  // relative rotation
   const rel = (b: number) => {
-    // Prefer magnetometer; if missing, use GPS course when moving (>0.5 m/s)
     const gpsHeading = (geo?.speed && geo.speed > 0.5) ? (geo.headingFromGPS ?? null) : null;
     const effective = deviceHeading ?? gpsHeading;
     if (effective == null) return null;
-
-    // Standard: friendBearing - myHeading (clockwise degrees)
     let r = (b - effective + 360) % 360;
-    if (flip) r = (360 - r) % 360; // optional device quirk flip
+    if (flip) r = (360 - r) % 360;
     return r;
   };
 
@@ -140,35 +117,29 @@ export default function Compass() {
           {others.map(o => {
             if (focused && o.uid !== focused) return null;
 
-            // Gating & UX polish
-            const myAcc = geo?.accuracy ?? 0;
-            const theirAcc = o.accuracy ?? 0;
-            const nearThreshold = Math.max(8, myAcc, theirAcc); // snap-to-zero threshold
-            const displayDist = o.dist < nearThreshold ? 0 : o.dist;
-
-            const tooOld = o.age > 15_000;          // hide arrows older than 15s
-            const veryOld = o.age > 30_000;         // mark very stale
-            const tooInaccurate = (o.accuracy ?? 0) > 100; // >100m: not useful
-
+            // 30s stale policy + accuracy gating
+            const tooOld = o.age > 30_000;               // ← changed from 15s to 30s
+            const veryOld = o.age > 60_000;
+            const tooInaccurate = (o.accuracy ?? 0) > 100;
             if (tooOld || tooInaccurate) return null;
+
+            // Snap-to-zero UX (optional, helps at very close range)
+            const myAcc = geo?.accuracy ?? 0;
+            const nearThreshold = Math.max(8, myAcc, o.accuracy ?? 0);
+            const displayDist = o.dist < nearThreshold ? 0 : o.dist;
 
             const angle = rel(o.bear);
             const rot = angle == null ? 0 : angle;
-
             const opacity = displayDist === 0 ? 0.5 : 0.9;
             const dash = veryOld ? '4,6' : undefined;
 
             return (
               <div key={o.uid} className="absolute left-1/2 top-1/2" style={{ transform: `translate(-50%,-50%) rotate(${rot}deg)` }}>
                 <svg width="300" height="300" viewBox="0 0 300 300" style={{ opacity }}>
-                  {/* main line pointing to 12 o'clock; container rotates */}
+                  {/* main shaft: 12 o'clock line; container rotates */}
                   <line x1="150" y1="150" x2="150" y2="28" stroke={o.member.color} strokeWidth="6" strokeDasharray={dash} />
-
-                  {/* simple triangle arrowhead at the tip (no <defs>/<marker>) */}
-                  <polygon
-                    points="150,12 162,32 138,32"
-                    fill={o.member.color}
-                  />
+                  {/* arrowhead polygon (no <defs>/<marker>) */}
+                  <polygon points="150,12 162,32 138,32" fill={o.member.color} />
                 </svg>
 
                 <div className="absolute -top-10 left-1/2 -translate-x-1/2 text-sm" style={{ color: o.member.color }}>

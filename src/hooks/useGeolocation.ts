@@ -12,30 +12,63 @@ export type Geo = {
 export function useGeolocation(active: boolean) {
   const [pos, setPos] = useState<Geo>(null);
   const watchId = useRef<number | null>(null);
+  const lastTick = useRef<number>(0);
+
+  const startWatch = () => {
+    if (!('geolocation' in navigator)) return;
+    try {
+      watchId.current = navigator.geolocation.watchPosition((p) => {
+        const { latitude: lat, longitude: lng, accuracy, heading, speed } = p.coords as any;
+        lastTick.current = Date.now();
+        setPos({
+          lat, lng,
+          accuracy: typeof accuracy === 'number' ? accuracy : undefined,
+          headingFromGPS: typeof heading === 'number' && !Number.isNaN(heading) ? (heading + 360) % 360 : null,
+          speed: typeof speed === 'number' && !Number.isNaN(speed) ? speed : null,
+          timestamp: Date.now()
+        });
+      }, (err) => {
+        console.warn('geo error', err);
+      }, {
+        enableHighAccuracy: true,
+        maximumAge: 1000,    // allow 1s cached fixes for smoothness
+        timeout: 8000
+      });
+    } catch {}
+  };
+
+  const stopWatch = () => {
+    if (watchId.current != null) {
+      try { navigator.geolocation.clearWatch(watchId.current); } catch {}
+      watchId.current = null;
+    }
+  };
 
   useEffect(() => {
     if (!active) return;
-    if (!('geolocation' in navigator)) return;
+    startWatch();
 
-    watchId.current = navigator.geolocation.watchPosition((p) => {
-      const { latitude: lat, longitude: lng, accuracy, heading, speed } = p.coords as any;
-      setPos({
-        lat, lng,
-        accuracy: typeof accuracy === 'number' ? accuracy : undefined,
-        headingFromGPS: typeof heading === 'number' && !Number.isNaN(heading) ? (heading + 360) % 360 : null,
-        speed: typeof speed === 'number' && !Number.isNaN(speed) ? speed : null,
-        timestamp: Date.now()
-      });
-    }, (err) => {
-      console.warn('geo error', err);
-    }, {
-      enableHighAccuracy: true,
-      maximumAge: 0,
-      timeout: 7000
-    });
+    const onVis = () => {
+      // restart when tab becomes visible
+      if (document.visibilityState === 'visible') {
+        stopWatch();
+        startWatch();
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+
+    // safety: if no updates for 20s, restart
+    const interval = window.setInterval(() => {
+      if (lastTick.current && Date.now() - lastTick.current > 20_000) {
+        stopWatch();
+        startWatch();
+      }
+    }, 10_000);
 
     return () => {
-      if (watchId.current != null) navigator.geolocation.clearWatch(watchId.current);
+      document.removeEventListener('visibilitychange', onVis);
+      clearInterval(interval);
+      stopWatch();
     };
   }, [active]);
 

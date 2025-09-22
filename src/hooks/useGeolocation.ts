@@ -15,14 +15,13 @@ export function useGeolocation(active: boolean) {
 
   useEffect(() => {
     if (!active) return;
-
     if (!('geolocation' in navigator)) return;
 
     watchId.current = navigator.geolocation.watchPosition((p) => {
       const { latitude: lat, longitude: lng, accuracy, heading, speed } = p.coords as any;
       setPos({
         lat, lng,
-        accuracy: accuracy ?? undefined,
+        accuracy: typeof accuracy === 'number' ? accuracy : undefined,
         headingFromGPS: typeof heading === 'number' && !Number.isNaN(heading) ? (heading + 360) % 360 : null,
         speed: typeof speed === 'number' && !Number.isNaN(speed) ? speed : null,
         timestamp: Date.now()

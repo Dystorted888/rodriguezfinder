@@ -40,7 +40,7 @@ export function useOrientation() {
         h = (base + screenAngle()) % 360;
       }
       if (h != null) {
-        const s = smooth(last.current, (h + 360) % 360, 0.15);
+        const s = smooth(last.current, (h + 360) % 360, 0.18);
         last.current = s;
         if (raf.current) cancelAnimationFrame(raf.current);
         raf.current = requestAnimationFrame(() => setHeading(s));

@@ -1,3 +1,4 @@
+// src/components/Compass.tsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -74,40 +75,34 @@ function useVibrateCues(enabled: boolean, distanceM: number | null) {
     if (!canVibrate) {
       if (!warnedRef.current) {
         warnedRef.current = true;
-        console.warn('Vibration ne fonctionne pas sur ce telephone pourri.');
+        console.warn('Vibration not supported on this device/browser.');
       }
       return;
     }
 
-	   // Clamp distance into a sane range
-	const d = Math.max(0.5, Math.min(distanceM, 150));
+    // Hot/Cold haptics: far = slow, near = rapid double-tap
+    const d = Math.max(0.5, Math.min(distanceM, 150));
+    const pulse = d <= 2 ? 65 : d <= 5 ? 50 : 35;
 
-	// Stronger pulse as we get closer (ms)
-	const pulse = d <= 2 ? 65 : d <= 5 ? 50 : 35;
+    let interval: number;
+    if (d > 100)      interval = 2400;
+    else if (d > 50)  interval = 1800;
+    else if (d > 25)  interval = 1200;
+    else if (d > 10)  interval = 700;
+    else if (d > 5)   interval = 400;
+    else if (d > 2)   interval = 230;
+    else              interval = 130;
 
-	// Cadence (ms) — much slower when far, very fast near
-	let interval: number;
-	if (d > 100)      interval = 2400;   // very far
-	else if (d > 50)  interval = 1800;   // far
-	else if (d > 25)  interval = 1200;   // mid-far
-	else if (d > 10)  interval = 700;    // mid
-	else if (d > 5)   interval = 400;    // near
-	else if (d > 2)   interval = 230;    // very near
-	else               interval = 130;    // within ~2 m -> rapid
+    const doVibe = () => {
+      if (d <= 5) {
+        navigator.vibrate?.([pulse, 90, pulse]); // double-tap when close
+      } else {
+        navigator.vibrate?.(pulse);
+      }
+    };
 
-	// Optional: double-tap pattern when under 5 m for clarity
-	const doVibe = () => {
-	  if (d <= 5) {
-		// double pulse: tap–tap (feels distinct when really close)
-		navigator.vibrate?.([pulse, 90, pulse]);
-	  } else {
-		navigator.vibrate?.(pulse);
-	  }
-	};
-	
-		// First pulse immediately, then cadence
-	doVibe();
-	timerRef.current = window.setInterval(doVibe, interval);
+    doVibe();
+    timerRef.current = window.setInterval(doVibe, interval);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -116,8 +111,8 @@ function useVibrateCues(enabled: boolean, distanceM: number | null) {
   }, [enabled, distanceM]);
 }
 
-export default function Compass() {
-  const { groupId, me, members, locations, setMembers, setLocations } = useStore();
+export default function Compass({ onQuit }: { onQuit?: () => void }) {
+  const { groupId, me, members, locations, setMembers, setLocations, setGroup, setMe } = useStore();
   const { heading: deviceHeading, requestPermission } = useOrientation();
   const geo = useGeolocation(true);
   useWakeLock(true);
@@ -125,6 +120,21 @@ export default function Compass() {
   const [focused, setFocused] = useState<string | null>(null);
   const [cuesOn, setCuesOn] = useState(false);
   const [showDiag, setShowDiag] = useState(false);
+
+  // Local fallback quit if parent didn't pass onQuit
+  const STORAGE_GROUP = 'fc.group';
+  const STORAGE_ME = 'fc.me';
+  const quit = onQuit ?? (() => {
+    const gid = groupId || localStorage.getItem(STORAGE_GROUP);
+    if (gid) {
+      localStorage.removeItem(`${STORAGE_ME}.${gid}`);
+    }
+    localStorage.removeItem(STORAGE_GROUP);
+    // keep generic fc.me so name/color can prefill next time
+    setMe(null);
+    setGroup(null);
+    history.replaceState(null, '', '#/');
+  });
 
   // long-press on "N" toggles diagnostics
   const pressT = useRef<number>(0);
@@ -176,7 +186,7 @@ export default function Compass() {
       : true;
 
     const dueHeartbeat = (now - last) >= CFG.heartbeatMs;
-    const dueMotion    = (now - last) >= CFG.motionWriteMinMs && (moved >= CFG.minMoveForWriteM || accImproved);
+    the const dueMotion    = (now - last) >= CFG.motionWriteMinMs && (moved >= CFG.minMoveForWriteM || accImproved);
 
     if (!dueHeartbeat && !dueMotion) return;
 
@@ -276,10 +286,10 @@ export default function Compass() {
 
   // left/right hint when heading unstable
   const hintFor = (b:number) => {
-    if (stableHeading == null) return 'Gardez le tel droit';
+    if (stableHeading == null) return 'Maintenez';
     let diff = (b - stableHeading + 540) % 360 - 180; // -180..180
-    if (Math.abs(diff) < 8) return 'Ahead';
-    return diff > 0 ? 'A droite' : 'A Gauche';
+    if (Math.abs(diff) < 8) return 'Devant';
+    return diff > 0 ? 'Tournez à droite' : 'Tournez à gauche';
   };
 
   const lockedFriend = focused ? (others.find(o => o.uid === focused) || null) : null;
@@ -297,126 +307,126 @@ export default function Compass() {
     ? `Heading: ${Math.round(stableHeading)}°`
     : (geo?.speed && geo.speed > CFG.gpsCourseMinSpeed && geo?.headingFromGPS != null)
       ? `GPS course: ${Math.round(geo.headingFromGPS!)}°`
-      : 'Heading: Gardez droit.';
+      : 'Heading: hold steady';
 
   const shareGroup = async () => {
     if (!groupId) return;
     const url = `${location.origin}/#/${groupId}`;
     try {
-      await (navigator as any).share?.({ title: 'Rejoignez les autres Rodriguez', text: `Group ${groupId}`, url }) ??
+      await (navigator as any).share?.({ title: 'Join my Friend Compass', text: `Group ${groupId}`, url }) ??
             navigator.clipboard.writeText(url);
-      alert('Lien copie!');
+      alert('Invite link shared/copied!');
     } catch {}
   };
 
   return (
-  <div className="p-4 h-full flex flex-col">
-    <div className="flex items-center justify-between gap-2">
-      <div className="text-sm text-slate-400">
-        Group: <span className="font-mono">{groupId}</span>
-        <button className="ml-2 text-xs underline" onClick={shareGroup}>Share</button>
-      </div>
-      <div className="flex items-center gap-3">
-        <span className="text-xs text-slate-400 hidden sm:inline">{headingStatus}</span>
-        <button className="text-xs px-2 py-1 rounded-lg bg-slate-800 border border-slate-700" onClick={requestPermission}>
-          Re-enable compass
-        </button>
-        {/* NEW: Quit group */}
-        <button
-          className="text-xs px-2 py-1 rounded-lg bg-red-600 hover:bg-red-500"
-          onClick={onQuit}
-          aria-label="Quit group"
-        >
-          Quitter le groupe
-        </button>
-      </div>
-    </div>
-
-    {stableHeading == null && (
-      <div className="text-center text-xs text-amber-300 mb-2">
-        {showHint
-          ? 'Le compas a trop de bruit - utilisez gauche/droite près de la flèche.'
-          : 'Gardez votre téléphone à plat/immobile ou marchez quelques mètres pour stabiliser la direction.'}
-      </div>
-    )}
-
-    <div className="flex-1 grid place-items-center">
-      <div className="relative w-[320px] h-[320px] rounded-full border border-slate-700">
-        {/* N marker with diagnostics long-press */}
-        <div
-          className="absolute left-1/2 -translate-x-1/2 -top-5 text-slate-400 select-none"
-          onMouseDown={onNDown} onMouseUp={onNUp} onTouchStart={onNDown} onTouchEnd={onNUp}
-        >N</div>
-
-        {others.map(o => {
-          if (focused && o.uid !== focused) return null;
-          const hide = o.age > CFG.hideAfterMs; if (hide) return null;
-
-          const displayDist = Math.max(0, o.distDisp ?? 0);
-          const rot = getRot(o.uid, o.bear);
-          const old = o.age > CFG.fadeOldMs;
-          const veryOld = o.age > CFG.dashVeryOldMs;
-
-          const showDirText = stableHeading == null && showHint;
-          const dirText = showDirText ? hintFor(o.bear) : null;
-
-          return (
-            <div key={o.uid} className="absolute left-1/2 top-1/2" style={{ transform: `translate(-50%,-50%) rotate(${rot}deg)` }}>
-              <svg width="300" height="300" viewBox="0 0 300 300" style={{ opacity: old ? 0.75 : 0.95 }}>
-                <line x1="150" y1="150" x2="150" y2="28" stroke={o.member.color} strokeWidth="6" strokeDasharray={veryOld ? '4,6' : undefined} />
-                <polygon points="150,12 162,32 138,32" fill={o.member.color} />
-              </svg>
-              <div className="absolute -top-10 left-1/2 -translate-x-1/2 text-sm" style={{ color: o.member.color }}>
-                <div className="px-2 py-0.5 rounded-full bg-black/40 backdrop-blur">
-                  {o.member.name} · {formatDist(displayDist)}
-                  {o.accuracy ? ` · ±${Math.max(3, Math.round(Math.min(15, 0.5 * Math.hypot(o.myAcc ?? 20, o.accuracy))))}m` : ''}
-                  {o.age > 15_000 ? ` · last ${fmtLastSeen(o.age)} ago` : ''}
-                  {dirText ? ` · ${dirText}` : ''}
-                </div>
-              </div>
-            </div>
-          );
-        })}
-
-        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-20 h-20 rounded-full bg-slate-800 grid place-items-center border border-slate-600">
-          You
+    <div className="p-4 h-full flex flex-col">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-sm text-slate-400">
+          Group: <span className="font-mono">{groupId}</span>
+          <button className="ml-2 text-xs underline" onClick={shareGroup}>Share</button>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-400 hidden sm:inline">{headingStatus}</span>
+          <button className="text-xs px-2 py-1 rounded-lg bg-slate-800 border border-slate-700" onClick={requestPermission}>
+            Re-enable compass
+          </button>
+          {/* Quit group (works even if App doesn't pass onQuit) */}
+          <button
+            className="text-xs px-2 py-1 rounded-lg bg-red-600 hover:bg-red-500"
+            onClick={quit}
+            aria-label="Quit group"
+          >
+            Quitter le groupe
+          </button>
         </div>
       </div>
-    </div>
 
-    <div className="flex items-center justify-between py-2 gap-2">
-      <div className="flex gap-2 overflow-x-auto">
-        {others.map(o => (
-          <button
-            key={o.uid}
-            onClick={() => setFocused(focused === o.uid ? null : o.uid)}
-            className="px-3 py-2 rounded-2xl bg-slate-800 text-sm"
-            style={{ border: focused === o.uid ? `2px solid ${o.member.color}` : '2px solid transparent' }}
-          >
-            <span className="inline-block w-3 h-3 rounded-full mr-2" style={{ background: o.member.color }} />
-            {o.member.name}
-          </button>
-        ))}
-      </div>
-
-      {focused && (
-        <div className="flex items-center gap-2 shrink-0">
-          <label className="text-xs flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={cuesOn}
-              onChange={e => setCuesOn(e.target.checked)}
-            />
-            Vibration
-          </label>
-          {cuesOn && vibrateUnsupported && (
-            <span className="text-[11px] text-slate-400">(vibration non supportée sur cet appareil)</span>
-          )}
+      {stableHeading == null && (
+        <div className="text-center text-xs text-amber-300 mb-2">
+          {showHint
+            ? 'Le compas a trop de bruit - utilisez gauche/droite près de la flèche.'
+            : 'Gardez votre téléphone à plat/immobile ou marchez quelques mètres pour stabiliser la direction.'}
         </div>
       )}
-    </div>
 
-    {showDiag && <Diagnostics me={me} geo={geo} heading={deviceHeading ?? null} groupId={groupId} />}
-  </div>
-);
+      <div className="flex-1 grid place-items-center">
+        <div className="relative w-[320px] h-[320px] rounded-full border border-slate-700">
+          {/* N marker with diagnostics long-press */}
+          <div
+            className="absolute left-1/2 -translate-x-1/2 -top-5 text-slate-400 select-none"
+            onMouseDown={onNDown} onMouseUp={onNUp} onTouchStart={onNDown} onTouchEnd={onNUp}
+          >N</div>
+
+          {others.map(o => {
+            if (focused && o.uid !== focused) return null;
+            const hide = o.age > CFG.hideAfterMs; if (hide) return null;
+
+            const displayDist = Math.max(0, o.distDisp ?? 0);
+            const rot = getRot(o.uid, o.bear);
+            const old = o.age > CFG.fadeOldMs;
+            const veryOld = o.age > CFG.dashVeryOldMs;
+
+            const showDirText = stableHeading == null && showHint;
+            const dirText = showDirText ? hintFor(o.bear) : null;
+
+            return (
+              <div key={o.uid} className="absolute left-1/2 top-1/2" style={{ transform: `translate(-50%,-50%) rotate(${rot}deg)` }}>
+                <svg width="300" height="300" viewBox="0 0 300 300" style={{ opacity: old ? 0.75 : 0.95 }}>
+                  <line x1="150" y1="150" x2="150" y2="28" stroke={o.member.color} strokeWidth="6" strokeDasharray={veryOld ? '4,6' : undefined} />
+                  <polygon points="150,12 162,32 138,32" fill={o.member.color} />
+                </svg>
+                <div className="absolute -top-10 left-1/2 -translate-x-1/2 text-sm" style={{ color: o.member.color }}>
+                  <div className="px-2 py-0.5 rounded-full bg-black/40 backdrop-blur">
+                    {o.member.name} · {formatDist(displayDist)}
+                    {o.accuracy ? ` · ±${Math.max(3, Math.round(Math.min(15, 0.5 * Math.hypot(o.myAcc ?? 20, o.accuracy))))}m` : ''}
+                    {o.age > 15_000 ? ` · last ${fmtLastSeen(o.age)} ago` : ''}
+                    {dirText ? ` · ${dirText}` : ''}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-20 h-20 rounded-full bg-slate-800 grid place-items-center border border-slate-600">
+            You
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between py-2 gap-2">
+        <div className="flex gap-2 overflow-x-auto">
+          {others.map(o => (
+            <button
+              key={o.uid}
+              onClick={() => setFocused(focused === o.uid ? null : o.uid)}
+              className="px-3 py-2 rounded-2xl bg-slate-800 text-sm"
+              style={{ border: focused === o.uid ? `2px solid ${o.member.color}` : '2px solid transparent' }}
+            >
+              <span className="inline-block w-3 h-3 rounded-full mr-2" style={{ background: o.member.color }} />
+              {o.member.name}
+            </button>
+          ))}
+        </div>
+
+        {focused && (
+          <div className="flex items-center gap-2 shrink-0">
+            <label className="text-xs flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={cuesOn}
+                onChange={e => setCuesOn(e.target.checked)}
+              />
+              Vibration
+            </label>
+            {cuesOn && typeof navigator.vibrate !== 'function' && (
+              <span className="text-[11px] text-slate-400">(vibration non supportée sur cet appareil)</span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {showDiag && <Diagnostics me={me} geo={geo} heading={deviceHeading ?? null} groupId={groupId} />}
+    </div>
+  );
 }

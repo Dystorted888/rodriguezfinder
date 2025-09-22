@@ -1,5 +1,10 @@
-if ('serviceWorker' in navigator && import.meta.env.PROD) {
+// src/service-worker-registration.ts
+// For MVP: fully disable PWA SW to avoid stale chunk 404s and caching weirdness.
+// This file *unregisters* any previously registered SW in production.
+if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+    navigator.serviceWorker.getRegistrations?.().then((regs) => {
+      regs.forEach((r) => r.unregister().catch(() => {}));
+    }).catch(() => {});
   });
 }

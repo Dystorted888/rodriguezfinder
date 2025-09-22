@@ -309,7 +309,7 @@ export default function Compass() {
     } catch {}
   };
 
-return (
+  return (
   <div className="p-4 h-full flex flex-col">
     <div className="flex items-center justify-between gap-2">
       <div className="text-sm text-slate-400">

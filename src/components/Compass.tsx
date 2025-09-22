@@ -79,14 +79,35 @@ function useVibrateCues(enabled: boolean, distanceM: number | null) {
       return;
     }
 
-    const d = Math.max(0.5, Math.min(distanceM, 80));
-    const interval = d < 3 ? 250 : d < 10 ? 450 : d < 25 ? 800 : 1200;
+	   // Clamp distance into a sane range
+	const d = Math.max(0.5, Math.min(distanceM, 150));
 
-    // immediate pulse then cadence
-    navigator.vibrate?.(35);
-    timerRef.current = window.setInterval(() => {
-      navigator.vibrate?.(35);
-    }, interval);
+	// Stronger pulse as we get closer (ms)
+	const pulse = d <= 2 ? 65 : d <= 5 ? 50 : 35;
+
+	// Cadence (ms) — much slower when far, very fast near
+	let interval: number;
+	if (d > 100)      interval = 2400;   // very far
+	else if (d > 50)  interval = 1800;   // far
+	else if (d > 25)  interval = 1200;   // mid-far
+	else if (d > 10)  interval = 700;    // mid
+	else if (d > 5)   interval = 400;    // near
+	else if (d > 2)   interval = 230;    // very near
+	else               interval = 130;    // within ~2 m -> rapid
+
+	// Optional: double-tap pattern when under 5 m for clarity
+	const doVibe = () => {
+	  if (d <= 5) {
+		// double pulse: tap–tap (feels distinct when really close)
+		navigator.vibrate?.([pulse, 90, pulse]);
+	  } else {
+		navigator.vibrate?.(pulse);
+	  }
+	};
+	
+		// First pulse immediately, then cadence
+	doVibe();
+	timerRef.current = window.setInterval(doVibe, interval);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);

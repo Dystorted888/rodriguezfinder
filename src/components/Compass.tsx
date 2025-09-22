@@ -16,7 +16,7 @@ function useWakeLock(active: boolean) {
   }, [active]);
 }
 
-// --- helpers ---
+// -------- helpers --------
 function smoothLL(prev: {lat:number,lng:number}|null, next: {lat:number,lng:number}, alpha = 0.25) {
   if (!prev) return next;
   const jump = haversine(prev, next);
@@ -26,25 +26,26 @@ function smoothLL(prev: {lat:number,lng:number}|null, next: {lat:number,lng:numb
     lng: prev.lng + alpha * (next.lng - prev.lng),
   };
 }
-function smoothScalar(prev: number | null, next: number, alpha = 0.55) {
+// faster scalar smoothing so meters react quickly
+function smoothScalar(prev: number | null, next: number, alpha = 0.65) {
   if (prev == null) return next;
-  return prev + alpha * (next - prev); // faster response so meters change quickly
+  return prev + alpha * (next - prev);
 }
-// angle smoothing with deadband & slew-limit
-function smoothAngle(prev: number | null, next: number, alpha = 0.5, dead = 5, maxStep = 6) {
+// angle smoothing with deadband & slew-limit (very steady)
+function smoothAngle(prev: number | null, next: number, alpha = 0.55, dead = 6, maxStep = 5) {
   if (prev == null) return next;
   let d = next - prev;
   if (d > 180) d -= 360;
   if (d < -180) d += 360;
-  if (Math.abs(d) < dead) return prev;                 // ignore micro-jitter
-  const step = Math.sign(d) * Math.min(Math.abs(d), maxStep); // glide towards target
+  if (Math.abs(d) < dead) return prev;                          // ignore micro-jitter
+  const step = Math.sign(d) * Math.min(Math.abs(d), maxStep);   // glide towards target
   const blended = prev + alpha * step;
   return (blended + 360) % 360;
 }
-function roundSmart(m: number) {
-  if (m < 20) return Math.max(1, Math.round(m));        // 1 m steps
-  if (m < 100) return Math.round(m / 5) * 5;            // 5 m steps
-  return Math.round(m / 10) * 10;                       // 10 m steps
+function roundDisplay(m: number) {
+  if (m < 10) return (Math.round(m * 10) / 10);  // 0.1 m resolution under 10 m
+  if (m < 100) return Math.round(m / 5) * 5;     // 5 m steps 10–100 m
+  return Math.round(m / 10) * 10;                // 10 m steps beyond
 }
 function fmtLastSeen(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -52,7 +53,6 @@ function fmtLastSeen(ms: number) {
   const ss = s % 60;
   return mm ? `${mm}m${ss.toString().padStart(2,'0')}s` : `${ss}s`;
 }
-
 // circular variance to judge heading stability
 function circularVariance(samples: number[]) {
   if (samples.length === 0) return Infinity;
@@ -67,6 +67,49 @@ function circularVariance(samples: number[]) {
   return 1 - R; // 0 stable … 1 very noisy
 }
 
+// -------- optional cues (vibration + quiet audio ticks) --------
+function useCues(enabled: boolean, distanceM: number | null) {
+  const audioCtxRef = useRef<AudioContext|null>(null);
+  const beepRef = useRef<{osc: OscillatorNode, gain: GainNode} | null>(null);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!enabled || distanceM == null) return;
+
+    // Create ctx lazily
+    if (!audioCtxRef.current) {
+      try { audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)(); }
+      catch { /* ignore */ }
+    }
+    const ctx = audioCtxRef.current;
+
+    function pulseOnce() {
+      // haptic (if supported)
+      try { navigator.vibrate?.(30); } catch {}
+      // tiny beep (if audio allowed)
+      if (ctx) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 880; // A5
+        gain.gain.value = 0.02;    // quiet
+        osc.connect(gain).connect(ctx.destination);
+        osc.start();
+        setTimeout(() => { try { osc.stop(); } catch {} }, 60);
+      }
+    }
+
+    // Rate based on distance: closer => faster pulses
+    const d = Math.max(0.5, Math.min(distanceM, 80)); // clamp 0.5..80
+    const interval = d < 3 ? 300 : d < 10 ? 500 : d < 25 ? 900 : 1400;
+
+    pulseOnce();
+    timerRef.current = window.setInterval(pulseOnce, interval);
+
+    return () => { if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null; };
+  }, [enabled, distanceM]);
+}
+
 export default function Compass() {
   const { groupId, me, members, locations, setMembers, setLocations } = useStore();
   const { heading: deviceHeading, requestPermission } = useOrientation();
@@ -75,8 +118,9 @@ export default function Compass() {
 
   const [focused, setFocused] = useState<string | null>(null);
   const [flip, setFlip] = useState(false);
+  const [cuesOn, setCuesOn] = useState(false); // vibration + quiet tick when locked
 
-  // heartbeat/throttle for writes
+  // heartbeat/throttle for writes (keep arrows alive)
   const lastWriteRef = useRef(0);
   const lastSentRef = useRef<{lat:number,lng:number,acc?:number}|null>(null);
 
@@ -108,7 +152,7 @@ export default function Compass() {
     return () => { unsubMembers(); unsubLoc(); };
   }, [groupId, setMembers, setLocations]);
 
-  // write my location (heartbeat every 15s even if stationary)
+  // write my location (heartbeat every 15s even if stationary; motion writes >=2.5s)
   useEffect(() => {
     if (!groupId || !me || !geo) return;
     const now = Date.now();
@@ -138,7 +182,7 @@ export default function Compass() {
     }, { merge: true });
   }, [groupId, me, geo]);
 
-  // compute others
+  // compute others with better distance & bearing stability
   const others = useMemo(() => {
     if (!me || !geo) return [] as any[];
 
@@ -168,20 +212,20 @@ export default function Compass() {
         const theirAcc = typeof loc.accuracy === 'number' ? loc.accuracy : undefined;
         const myAcc = geo.accuracy ?? undefined;
 
-        // corrected distance: subtract a *smaller* portion of the accuracy bubble so it doesn't clamp to 0
+        // LOWER correction for accuracy bubble so close-range isn't stuck at 1 m
         const sigma = Math.hypot(myAcc ?? 20, theirAcc ?? 20);
-        const corrected = Math.max(0, rawDist - 0.3 * sigma); // was 0.6
+        const corrected = Math.max(0, rawDist - 0.2 * sigma); // ← was 0.3..0.6; now gentler
 
-        // median-of-3 (faster reaction)
+        // median-of-3 for spike rejection (short window -> responsive)
         const arr = distWindowRef.current[uid] ?? [];
         arr.push(corrected);
         if (arr.length > 3) arr.shift();
         distWindowRef.current[uid] = arr.slice();
         const median = [...arr].sort((a,b)=>a-b)[Math.floor(arr.length/2)];
 
-        // EMA on top (faster alpha)
+        // EMA on top (fast)
         const prevD = distSmoothRef.current[uid] ?? null;
-        const dispD = smoothScalar(prevD, median, 0.55);
+        const dispD = smoothScalar(prevD, median, 0.65);
         distSmoothRef.current[uid] = dispD;
 
         return {
@@ -196,37 +240,45 @@ export default function Compass() {
       .sort((a: any, b: any) => a.distDisp - b.distDisp);
   }, [me, geo, locations, members]);
 
-  // pick a stable heading: compass if stable, else GPS course if moving, else freeze last stable
+  // heading stability & choice
   const stableHeading = (() => {
     const h = deviceHeading;
     const buf = headingBufRef.current;
     const varH = (buf.length >= 6) ? circularVariance(buf) : 0;
-    const compassStable = h != null && varH < 0.15; // 0 (stable)…1 (noisy)
+    const compassStable = h != null && varH < 0.12; // tighter threshold
     const gpsOk = (geo?.speed ?? 0) > 0.3 && (geo?.headingFromGPS != null);
 
     if (compassStable) return h!;
     if (gpsOk) return geo!.headingFromGPS!;
-    // else: return null to freeze arrow at last smoothed angle
-    return null;
+    return null; // freeze rotation if no stable heading
   })();
 
-  // compute rotation with per-friend smoothing; freeze when heading unstable
+  // per-friend rotation; freeze when unstable
   const getRot = (uid: string, b: number) => {
     const eff = stableHeading;
-    // if heading not stable, keep last rotation (do not whip arrow)
-    if (eff == null) return angleSmoothRef.current[uid] ?? 0;
+    if (eff == null) return angleSmoothRef.current[uid] ?? 0; // freeze
     let r = (b - eff + 360) % 360;
     if (flip) r = (360 - r) % 360;
 
     const prev = angleSmoothRef.current[uid] ?? null;
-    const sm = smoothAngle(prev, r, 0.5, 5, 6); // stronger smoothing, wider deadband, smaller steps
+    const sm = smoothAngle(prev, r, 0.55, 6, 5);
     angleSmoothRef.current[uid] = sm;
     return sm ?? r;
   };
 
+  const headingUnstable = stableHeading == null;
+
+  // cues (vibration/audio) only when a friend is locked
+  const lockedFriend = focused
+    ? others.find(o => o.uid === focused) || null
+    : null;
+  useCues(cuesOn && !!lockedFriend, lockedFriend?.distDisp ?? null);
+
   const formatDist = (m: number) => {
-    const rounded = roundSmart(m);
-    return rounded < 1000 ? `${rounded} m` : `${(rounded/1000).toFixed(1)} km`;
+    const rounded = roundDisplay(m);
+    if (rounded < 10) return `${rounded.toFixed(1)} m`;
+    if (rounded < 1000) return `${Math.round(rounded)} m`;
+    return `${(rounded/1000).toFixed(1)} km`;
   };
 
   const headingStatus = stableHeading != null
@@ -234,8 +286,6 @@ export default function Compass() {
     : (geo?.speed && geo.speed > 0.3 && geo?.headingFromGPS != null)
       ? `GPS course: ${Math.round(geo.headingFromGPS!)}°`
       : 'Heading: hold steady';
-
-  const headingUnstable = stableHeading == null;
 
   return (
     <div className="p-4 h-full flex flex-col">
@@ -255,7 +305,7 @@ export default function Compass() {
 
       {headingUnstable && (
         <div className="text-center text-xs text-amber-300 mb-2">
-          Hold phone steady or move a few meters to stabilize direction.
+          Hold phone flat/steady or walk a few meters to stabilize direction.
         </div>
       )}
 
@@ -265,9 +315,10 @@ export default function Compass() {
           <div className="absolute left-1/2 -translate-x-1/2 -top-5 text-slate-400">N</div>
 
           {others.map(o => {
+            // lock view: when locked, only show that friend’s arrow
             if (focused && o.uid !== focused) return null;
 
-            const hide = o.age > 300_000; // only hide after 5 min
+            const hide = o.age > 300_000; // hide after 5 min
             if (hide) return null;
 
             const displayDist = Math.max(0, o.distDisp ?? 0);
@@ -277,7 +328,7 @@ export default function Compass() {
 
             return (
               <div key={o.uid} className="absolute left-1/2 top-1/2" style={{ transform: `translate(-50%,-50%) rotate(${rot}deg)` }}>
-                <svg width="300" height="300" viewBox="0 0 300 300" style={{ opacity: old ? 0.7 : 0.95 }}>
+                <svg width="300" height="300" viewBox="0 0 300 300" style={{ opacity: old ? 0.75 : 0.95 }}>
                   <line x1="150" y1="150" x2="150" y2="28" stroke={o.member.color} strokeWidth="6" strokeDasharray={veryOld ? '4,6' : undefined} />
                   <polygon points="150,12 162,32 138,32" fill={o.member.color} />
                 </svg>
@@ -298,18 +349,28 @@ export default function Compass() {
         </div>
       </div>
 
-      <div className="flex gap-2 overflow-x-auto py-2">
-        {others.map(o => (
-          <button
-            key={o.uid}
-            onClick={() => setFocused(focused === o.uid ? null : o.uid)}
-            className="px-3 py-2 rounded-2xl bg-slate-800 text-sm"
-            style={{ border: focused === o.uid ? `2px solid ${o.member.color}` : '2px solid transparent' }}
-          >
-            <span className="inline-block w-3 h-3 rounded-full mr-2" style={{ background: o.member.color }} />
-            {o.member.name}
-          </button>
-        ))}
+      <div className="flex items-center justify-between py-2 gap-2">
+        <div className="flex gap-2 overflow-x-auto">
+          {others.map(o => (
+            <button
+              key={o.uid}
+              onClick={() => setFocused(focused === o.uid ? null : o.uid)}
+              className="px-3 py-2 rounded-2xl bg-slate-800 text-sm"
+              style={{ border: focused === o.uid ? `2px solid ${o.member.color}` : '2px solid transparent' }}
+            >
+              <span className="inline-block w-3 h-3 rounded-full mr-2" style={{ background: o.member.color }} />
+              {o.member.name}
+            </button>
+          ))}
+        </div>
+
+        {/* Cues toggle only visible when locked */}
+        {focused && (
+          <label className="text-xs flex items-center gap-2 shrink-0">
+            <input type="checkbox" checked={cuesOn} onChange={e => setCuesOn(e.target.checked)} />
+            Cues (vibrate/tick)
+          </label>
+        )}
       </div>
     </div>
   );

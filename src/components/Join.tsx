@@ -8,7 +8,7 @@ import ColorPicker from './ColorPicker';
 const STORAGE_ME = 'fc.me';
 
 function randomId(len = 6) {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
   return Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
 
@@ -80,7 +80,7 @@ export default function Join({
         const canShareFile = (navigator as any).canShare && (navigator as any).canShare({ files: [file] });
         if (canShareFile) {
           await (navigator as any).share({
-            title: 'Join my Friend Compass group',
+            title: 'Rejoignez les autres Rodriguez !',
             text: `Scan or open link to join. Group: ${groupId}`,
             files: [file],
           });
@@ -91,13 +91,13 @@ export default function Join({
       // Fallback: share link via Web Share or copy to clipboard
       if ((navigator as any).share) {
         await (navigator as any).share({
-          title: 'Join my Friend Compass group',
+          title: 'Rejoignez les autres Rodriguez !',
           text: `Group: ${groupId}`,
           url,
         });
       } else {
         await navigator.clipboard.writeText(url);
-        alert('Invite link copied to clipboard!');
+        alert('Invitation copie sur le clipboard.');
       }
     } catch {
       // Final fallback: open QR in new tab for manual save
@@ -117,7 +117,7 @@ export default function Join({
     if (!groupId) return;
     try {
       await navigator.clipboard.writeText(groupId);
-      alert('Group code copied!');
+      alert('Code copie.');
     } catch {}
   };
 

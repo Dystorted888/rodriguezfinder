@@ -74,7 +74,7 @@ function useVibrateCues(enabled: boolean, distanceM: number | null) {
     if (!canVibrate) {
       if (!warnedRef.current) {
         warnedRef.current = true;
-        console.warn('Vibration not supported on this device/browser.');
+        console.warn('Vibration ne fonctionne pas sur ce telephone pourri.');
       }
       return;
     }
@@ -276,10 +276,10 @@ export default function Compass() {
 
   // left/right hint when heading unstable
   const hintFor = (b:number) => {
-    if (stableHeading == null) return 'Hold steady';
+    if (stableHeading == null) return 'Gardez le tel droit';
     let diff = (b - stableHeading + 540) % 360 - 180; // -180..180
     if (Math.abs(diff) < 8) return 'Ahead';
-    return diff > 0 ? 'Turn right' : 'Turn left';
+    return diff > 0 ? 'A droite' : 'A Gauche';
   };
 
   const lockedFriend = focused ? (others.find(o => o.uid === focused) || null) : null;
@@ -297,15 +297,15 @@ export default function Compass() {
     ? `Heading: ${Math.round(stableHeading)}°`
     : (geo?.speed && geo.speed > CFG.gpsCourseMinSpeed && geo?.headingFromGPS != null)
       ? `GPS course: ${Math.round(geo.headingFromGPS!)}°`
-      : 'Heading: hold steady';
+      : 'Heading: Gardez droit.';
 
   const shareGroup = async () => {
     if (!groupId) return;
     const url = `${location.origin}/#/${groupId}`;
     try {
-      await (navigator as any).share?.({ title: 'Join my Friend Compass', text: `Group ${groupId}`, url }) ??
+      await (navigator as any).share?.({ title: 'Rejoignez les autres Rodriguez', text: `Group ${groupId}`, url }) ??
             navigator.clipboard.writeText(url);
-      alert('Invite link shared/copied!');
+      alert('Lien copie!');
     } catch {}
   };
 
@@ -324,7 +324,7 @@ export default function Compass() {
 
       {stableHeading == null && (
         <div className="text-center text-xs text-amber-300 mb-2">
-          {showHint ? 'Compass is noisy — use the left/right hint near the arrow.' : 'Hold phone flat/steady or walk a few meters to stabilize direction.'}
+          {showHint ? 'Le compas a trop de bruit - utilisez gauche/droite pret de la fleche.' : 'Gardez votre telephone a plat/droit ou marchez quelques metres pour stabiliser la direction.'}
         </div>
       )}
 

@@ -16,7 +16,7 @@ function useWakeLock(active: boolean) {
   }, [active]);
 }
 
-// simple EMA for lat/lng; resets on large jumps (>100 m)
+// --- helpers ---
 function smoothLL(prev: {lat:number,lng:number}|null, next: {lat:number,lng:number}, alpha = 0.25) {
   if (!prev) return next;
   const jump = haversine(prev, next);
@@ -26,13 +26,26 @@ function smoothLL(prev: {lat:number,lng:number}|null, next: {lat:number,lng:numb
     lng: prev.lng + alpha * (next.lng - prev.lng),
   };
 }
-
-// EMA for scalar (distance display)
 function smoothScalar(prev: number | null, next: number, alpha = 0.35) {
   if (prev == null) return next;
   return prev + alpha * (next - prev);
 }
-
+// angle smoothing with deadband & slew-limit
+function smoothAngle(prev: number | null, next: number, alpha = 0.25, dead = 3, maxStep = 10) {
+  if (prev == null) return next;
+  let d = next - prev;
+  if (d > 180) d -= 360;
+  if (d < -180) d += 360;
+  if (Math.abs(d) < dead) return prev;                 // deadband
+  const step = Math.sign(d) * Math.min(Math.abs(d), maxStep); // slew limit (deg per update)
+  const blended = prev + alpha * step;
+  return (blended + 360) % 360;
+}
+function roundSmart(m: number) {
+  if (m < 20) return Math.max(1, Math.round(m));        // 1m steps
+  if (m < 100) return Math.round(m / 5) * 5;            // 5m steps
+  return Math.round(m / 10) * 10;                       // 10m steps
+}
 function fmtLastSeen(ms: number) {
   const s = Math.floor(ms / 1000);
   const mm = Math.floor(s / 60);
@@ -43,13 +56,13 @@ function fmtLastSeen(ms: number) {
 export default function Compass() {
   const { groupId, me, members, locations, setMembers, setLocations } = useStore();
   const { heading: deviceHeading, requestPermission } = useOrientation();
-  const geo = useGeolocation(true); // watchPosition stream
+  const geo = useGeolocation(true);
   useWakeLock(true);
 
   const [focused, setFocused] = useState<string | null>(null);
   const [flip, setFlip] = useState(false);
 
-  // throttled Firestore writes + heartbeat
+  // heartbeat/throttle for writes
   const lastWriteRef = useRef(0);
   const lastSentRef = useRef<{lat:number,lng:number,acc?:number}|null>(null);
 
@@ -57,8 +70,10 @@ export default function Compass() {
   const mySmoothRef = useRef<{lat:number,lng:number}|null>(null);
   const friendSmoothRef = useRef<Record<string,{lat:number,lng:number}>>({});
   const distSmoothRef = useRef<Record<string, number | null>>({});
+  const distWindowRef = useRef<Record<string, number[]>>({});
+  const angleSmoothRef = useRef<Record<string, number | null>>({});
 
-  // subscribe members & locations
+  // subscribe to members & locations
   useEffect(() => {
     if (!groupId) return;
     const unsubMembers = onSnapshot(collection(db, 'groups', groupId, 'members'), snap => {
@@ -82,7 +97,7 @@ export default function Compass() {
       ? (lastSentRef.current.acc - geo.accuracy) > 5
       : true;
 
-    const dueHeartbeat = (now - last) >= 15000;      // heartbeat every 15s
+    const dueHeartbeat = (now - last) >= 15000;
     const dueMotion    = (now - last) >= 2500 && (moved >= 3 || accImproved);
 
     if (!dueHeartbeat && !dueMotion) return;
@@ -100,11 +115,10 @@ export default function Compass() {
     }, { merge: true });
   }, [groupId, me, geo]);
 
-  // build friend list with smoothing + safe math
+  // compute others
   const others = useMemo(() => {
     if (!me || !geo) return [] as any[];
 
-    // smooth my own position for rendering stability
     const myRaw = { lat: Number(geo.lat), lng: Number(geo.lng) };
     mySmoothRef.current = smoothLL(mySmoothRef.current, myRaw, 0.25);
     const mySm = mySmoothRef.current ?? myRaw;
@@ -118,11 +132,12 @@ export default function Compass() {
         const theirRaw = { lat: Number(loc.lat), lng: Number(loc.lng) };
         if (!Number.isFinite(theirRaw.lat) || !Number.isFinite(theirRaw.lng)) return null;
 
-        // smooth friend
+        // smooth friend lat/lng
         const prev = friendSmoothRef.current[uid] ?? null;
         const theirSm = smoothLL(prev, theirRaw, 0.35);
         friendSmoothRef.current[uid] = theirSm;
 
+        // raw metrics
         const rawDist = haversine(mySm, theirSm);
         const bRaw = bearing(mySm, theirSm);
         const bear = Number.isFinite(bRaw) ? bRaw : 0;
@@ -130,18 +145,24 @@ export default function Compass() {
         const theirAcc = typeof loc.accuracy === 'number' ? loc.accuracy : undefined;
         const myAcc = geo.accuracy ?? undefined;
 
-        // corrected distance against combined accuracy bubble
+        // corrected distance: subtract a portion of combined accuracy bubble
         const sigma = Math.hypot(myAcc ?? 20, theirAcc ?? 20);
         const corrected = Math.max(0, rawDist - 0.6 * sigma);
 
-        // smooth displayed distance per friend
+        // median-of-5 window to remove spikes
+        const arr = distWindowRef.current[uid] ?? [];
+        arr.push(corrected);
+        if (arr.length > 5) arr.shift();
+        distWindowRef.current[uid] = arr.slice();
+        const median = [...arr].sort((a,b)=>a-b)[Math.floor(arr.length/2)];
+
+        // EMA on top
         const prevD = distSmoothRef.current[uid] ?? null;
-        const dispD = smoothScalar(prevD, corrected, 0.35);
+        const dispD = smoothScalar(prevD, median, 0.35);
         distSmoothRef.current[uid] = dispD;
 
         return {
           uid, member,
-          distRaw: rawDist,
           distDisp: dispD,
           bear, age,
           accuracy: theirAcc,
@@ -152,17 +173,24 @@ export default function Compass() {
       .sort((a: any, b: any) => a.distDisp - b.distDisp);
   }, [me, geo, locations, members]);
 
-  // relative rotation toward bearing `b`
-  const rel = (b: number) => {
+  // compute rotation with per-friend smoothing
+  const getRot = (uid: string, b: number) => {
     const gpsHeading = (geo?.speed && geo.speed > 0.5) ? (geo.headingFromGPS ?? null) : null;
     const effective = deviceHeading ?? gpsHeading;
-    if (effective == null) return null;
+    if (effective == null) return 0;
     let r = (b - effective + 360) % 360;
     if (flip) r = (360 - r) % 360;
-    return r;
+
+    const prev = angleSmoothRef.current[uid] ?? null;
+    const sm = smoothAngle(prev, r, 0.35, 3, 12); // alpha, deadband, max step per frame
+    angleSmoothRef.current[uid] = sm;
+    return sm ?? r;
   };
 
-  const formatDist = (m: number) => (m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`);
+  const formatDist = (m: number) => {
+    const rounded = roundSmart(m);
+    return rounded < 1000 ? `${rounded} m` : `${(rounded/1000).toFixed(1)} km`;
+  };
 
   const headingStatus = deviceHeading != null
     ? `Compass: ${Math.round(deviceHeading)}°`
@@ -194,34 +222,24 @@ export default function Compass() {
           {others.map(o => {
             if (focused && o.uid !== focused) return null;
 
-            // age styling (never hide under 5 minutes)
-            const old = o.age > 30_000;       // faded after 30s
-            const veryOld = o.age > 120_000;  // dashed after 2 min
-            const hide = o.age > 300_000;     // hide after 5 min
+            const hide = o.age > 300_000; // only hide after 5 min
             if (hide) return null;
 
-            // display distance (never clamp to 0 unless truly tiny after correction)
-            const tiny = o.distDisp < 2;
-            const displayDist = tiny ? 0 : o.distDisp;
-
-            const angle = rel(o.bear);
-            const rot = angle == null ? 0 : angle;
-            const opacity = old ? 0.65 : 0.95;
-            const dash = veryOld ? '4,6' : undefined;
+            const displayDist = Math.max(0, o.distDisp ?? 0);
+            const rot = getRot(o.uid, o.bear);
+            const old = o.age > 30_000;
+            const veryOld = o.age > 120_000;
 
             return (
               <div key={o.uid} className="absolute left-1/2 top-1/2" style={{ transform: `translate(-50%,-50%) rotate(${rot}deg)` }}>
-                <svg width="300" height="300" viewBox="0 0 300 300" style={{ opacity }}>
-                  {/* main shaft: 12 o'clock line (container rotates) */}
-                  <line x1="150" y1="150" x2="150" y2="28" stroke={o.member.color} strokeWidth="6" strokeDasharray={dash} />
-                  {/* arrowhead polygon */}
+                <svg width="300" height="300" viewBox="0 0 300 300" style={{ opacity: old ? 0.7 : 0.95 }}>
+                  <line x1="150" y1="150" x2="150" y2="28" stroke={o.member.color} strokeWidth="6" strokeDasharray={veryOld ? '4,6' : undefined} />
                   <polygon points="150,12 162,32 138,32" fill={o.member.color} />
                 </svg>
-
                 <div className="absolute -top-10 left-1/2 -translate-x-1/2 text-sm" style={{ color: o.member.color }}>
                   <div className="px-2 py-0.5 rounded-full bg-black/40 backdrop-blur">
-                    {o.member.name} · {displayDist === 0 ? '≈0 m' : formatDist(displayDist)}
-                    {o.accuracy ? ` · ±${Math.round(o.accuracy)}m` : ''}
+                    {o.member.name} · {formatDist(displayDist)}
+                    {o.accuracy ? ` · ±${Math.max(3, Math.round(Math.min(15, 0.5 * Math.hypot(o.myAcc ?? 20, o.accuracy))))}m` : ''}
                     {o.age > 15_000 ? ` · last ${fmtLastSeen(o.age)} ago` : ''}
                   </div>
                 </div>

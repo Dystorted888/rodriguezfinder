@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 // Low-pass filter so heading doesn't jitter
-function smooth(prev: number | null, next: number, alpha = 0.2) {
+function smooth(prev: number | null, next: number, alpha = 0.15) {
   if (prev == null) return next;
   let d = next - prev;
   if (d > 180) d -= 360;
@@ -40,7 +40,7 @@ export function useOrientation() {
         h = (base + screenAngle()) % 360;
       }
       if (h != null) {
-        const s = smooth(last.current, (h + 360) % 360, 0.18);
+        const s = smooth(last.current, (h + 360) % 360, 0.12); // slightly stronger smoothing
         last.current = s;
         if (raf.current) cancelAnimationFrame(raf.current);
         raf.current = requestAnimationFrame(() => setHeading(s));
@@ -54,7 +54,6 @@ export function useOrientation() {
     window.addEventListener('deviceorientation', onRel as any, true);
 
     const onSO = () => {
-      // Nudge to recalc after rotation
       if (last.current != null) setHeading(((last.current + 0.001) + 360) % 360);
     };
     window.addEventListener('orientationchange', onSO);

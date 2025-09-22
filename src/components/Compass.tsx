@@ -18,11 +18,11 @@ function useWakeLock(active: boolean) {
   }, [active]);
 }
 
-// helpers (unchanged in spirit)
+// ---------- helpers ----------
 function smoothLL(prev: {lat:number,lng:number}|null, next: {lat:number,lng:number}, alpha = 0.25) {
   if (!prev) return next;
   const jump = haversine(prev, next);
-  if (jump > 100) return next;
+  if (jump > 100) return next; // reset on big jumps
   return { lat: prev.lat + alpha * (next.lat - prev.lat), lng: prev.lng + alpha * (next.lng - prev.lng) };
 }
 function smoothScalar(prev: number | null, next: number, alpha: number) {
@@ -34,8 +34,8 @@ function smoothAngle(prev: number | null, next: number, alpha: number, dead: num
   let d = next - prev;
   if (d > 180) d -= 360;
   if (d < -180) d += 360;
-  if (Math.abs(d) < dead) return prev;
-  const step = Math.sign(d) * Math.min(Math.abs(d), maxStep);
+  if (Math.abs(d) < dead) return prev;                // deadband
+  const step = Math.sign(d) * Math.min(Math.abs(d), maxStep); // slew limit
   const blended = prev + alpha * step;
   return (blended + 360) % 360;
 }
@@ -55,8 +55,44 @@ function circularVariance(samples: number[]) {
   const toRad = (d:number)=>d*Math.PI/180;
   let sumSin=0, sumCos=0;
   for(const a of samples){ const r = toRad(a); sumCos += Math.cos(r); sumSin += Math.sin(r); }
-  const R = Math.sqrt(sumCos*sumCos + sumSin*sumSin) / samples.length;
-  return 1 - R;
+  const R = Math.sqrt(sumCos*sumCos + sumSin*sumSin) / samples.length; // 0..1
+  return 1 - R; // 0 stable … 1 noisy
+}
+
+// ---- vibration cues (Android; iOS Safari does not support) ----
+function useVibrateCues(enabled: boolean, distanceM: number | null) {
+  const timerRef = useRef<number | null>(null);
+  const warnedRef = useRef(false);
+
+  useEffect(() => {
+    if (!enabled || distanceM == null) {
+      if (timerRef.current) clearInterval(timerRef.current);
+      timerRef.current = null;
+      return;
+    }
+    const canVibrate = typeof navigator.vibrate === 'function';
+    if (!canVibrate) {
+      if (!warnedRef.current) {
+        warnedRef.current = true;
+        console.warn('Vibration not supported on this device/browser.');
+      }
+      return;
+    }
+
+    const d = Math.max(0.5, Math.min(distanceM, 80));
+    const interval = d < 3 ? 250 : d < 10 ? 450 : d < 25 ? 800 : 1200;
+
+    // immediate pulse then cadence
+    navigator.vibrate?.(35);
+    timerRef.current = window.setInterval(() => {
+      navigator.vibrate?.(35);
+    }, interval);
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      timerRef.current = null;
+    };
+  }, [enabled, distanceM]);
 }
 
 export default function Compass() {
@@ -66,16 +102,15 @@ export default function Compass() {
   useWakeLock(true);
 
   const [focused, setFocused] = useState<string | null>(null);
-  const [flip, setFlip] = useState(false);
   const [cuesOn, setCuesOn] = useState(false);
   const [showDiag, setShowDiag] = useState(false);
 
-  // long press on "N" to toggle diagnostics
+  // long-press on "N" toggles diagnostics
   const pressT = useRef<number>(0);
   const onNDown = () => { pressT.current = Date.now(); };
   const onNUp = () => { if (Date.now() - pressT.current > 500) setShowDiag(v=>!v); };
 
-  // Firestore write throttling
+  // Firestore writes (heartbeat + motion)
   const lastWriteRef = useRef(0);
   const lastSentRef = useRef<{lat:number,lng:number,acc?:number}|null>(null);
 
@@ -95,7 +130,7 @@ export default function Compass() {
     if (buf.length > 12) buf.shift();
   },[deviceHeading]);
 
-  // subscribe
+  // subscribe to members & locations
   useEffect(() => {
     if (!groupId) return;
     const unsubMembers = onSnapshot(collection(db, 'groups', groupId, 'members'), snap => {
@@ -107,7 +142,7 @@ export default function Compass() {
     return () => { unsubMembers(); unsubLoc(); };
   }, [groupId, setMembers, setLocations]);
 
-  // write (heartbeat + motion)
+  // write my location (heartbeat every 15s; motion ≥ 2.5s)
   useEffect(() => {
     if (!groupId || !me || !geo) return;
     const now = Date.now();
@@ -154,12 +189,10 @@ export default function Compass() {
         const theirRaw = { lat: Number(loc.lat), lng: Number(loc.lng) };
         if (!Number.isFinite(theirRaw.lat) || !Number.isFinite(theirRaw.lng)) return null;
 
-        // smooth friend lat/lng
         const prev = friendSmoothRef.current[uid] ?? null;
         const theirSm = smoothLL(prev, theirRaw, 0.35);
         friendSmoothRef.current[uid] = theirSm;
 
-        // raw metrics
         const rawDist = haversine(mySm, theirSm);
         const bRaw = bearing(mySm, theirSm);
         const bear = Number.isFinite(bRaw) ? bRaw : 0;
@@ -167,18 +200,15 @@ export default function Compass() {
         const theirAcc = typeof loc.accuracy === 'number' ? loc.accuracy : undefined;
         const myAcc = geo.accuracy ?? undefined;
 
-        // gentler correction so close-range isn't pinned
         const sigma = Math.hypot(myAcc ?? 20, theirAcc ?? 20);
         const corrected = Math.max(0, rawDist - CFG.accuracySubtractK * sigma);
 
-        // median-of-window
         const arr = distWindowRef.current[uid] ?? [];
         arr.push(corrected);
         if (arr.length > CFG.distMedianWindow) arr.shift();
         distWindowRef.current[uid] = arr.slice();
         const median = [...arr].sort((a,b)=>a-b)[Math.floor(arr.length/2)];
 
-        // adaptive EMA: faster when moving, calmer when still
         const moving = (geo?.speed ?? 0) > 0.8 || age < 5_000;
         const alpha = moving ? Math.max(CFG.distEmaAlpha, 0.6) : Math.min(CFG.distEmaAlpha, 0.5);
         const prevD = distSmoothRef.current[uid] ?? null;
@@ -191,7 +221,7 @@ export default function Compass() {
       .sort((a: any, b: any) => a.distDisp - b.distDisp);
   }, [me, geo, locations, members]);
 
-  // pick stable heading or freeze & hint
+  // heading stability / selection
   const headingBuf = headingBufRef.current;
   const varH = (headingBuf.length >= 6) ? circularVariance(headingBuf) : 0;
   const compassStable = deviceHeading != null && varH < CFG.headingVarianceStable;
@@ -207,13 +237,11 @@ export default function Compass() {
   const showHint = unstableSinceRef.current != null &&
                    Date.now() - unstableSinceRef.current > CFG.unstableFreezeMs;
 
-  // per-friend rotation; adaptive smoothing
+  // rotation with adaptive smoothing
   const getRot = (uid: string, b: number) => {
-    if (stableHeading == null) return angleSmoothRef.current[uid] ?? 0; // freeze
+    if (stableHeading == null) return angleSmoothRef.current[uid] ?? 0; // freeze if unstable
     let r = (b - stableHeading + 360) % 360;
-    if (flip) r = (360 - r) % 360;
 
-    // if moving faster, allow a bit bigger step and smaller deadband
     const fast = (geo?.speed ?? 0) > 1.0;
     const dead = fast ? CFG.angleDeadbandDeg - 2 : CFG.angleDeadbandDeg;
     const step = fast ? CFG.angleMaxStepDeg + 2 : CFG.angleMaxStepDeg;
@@ -234,6 +262,8 @@ export default function Compass() {
   };
 
   const lockedFriend = focused ? (others.find(o => o.uid === focused) || null) : null;
+  useVibrateCues(cuesOn && !!lockedFriend, lockedFriend?.distDisp ?? null);
+  const vibrateUnsupported = typeof navigator.vibrate !== 'function';
 
   const formatDist = (m: number) => {
     const x = roundDisplay(m);
@@ -248,7 +278,6 @@ export default function Compass() {
       ? `GPS course: ${Math.round(geo.headingFromGPS!)}°`
       : 'Heading: hold steady';
 
-  // share helpers (works great for re-invites)
   const shareGroup = async () => {
     if (!groupId) return;
     const url = `${location.origin}/#/${groupId}`;
@@ -269,10 +298,6 @@ export default function Compass() {
         <div className="flex items-center gap-3">
           <span className="text-xs text-slate-400 hidden sm:inline">{headingStatus}</span>
           <button className="text-sm underline" onClick={requestPermission}>Re-enable compass</button>
-          <label className="text-xs flex items-center gap-1">
-            <input type="checkbox" checked={flip} onChange={e => setFlip(e.target.checked)} />
-            Flip
-          </label>
         </div>
       </div>
 
@@ -342,10 +367,19 @@ export default function Compass() {
         </div>
 
         {focused && (
-          <label className="text-xs flex items-center gap-2 shrink-0">
-            <input type="checkbox" checked={cuesOn} onChange={e => setCuesOn(e.target.checked)} />
-            Cues (vibrate/tick)
-          </label>
+          <div className="flex items-center gap-2 shrink-0">
+            <label className="text-xs flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={cuesOn}
+                onChange={e => setCuesOn(e.target.checked)}
+              />
+              Vibrate cue
+            </label>
+            {cuesOn && vibrateUnsupported && (
+              <span className="text-[11px] text-slate-400">(not supported on this device)</span>
+            )}
+          </div>
         )}
       </div>
 

@@ -5,6 +5,8 @@ import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import ColorPicker from './ColorPicker';
 
+const STORAGE_ME = 'fc.me';
+
 function randomId(len = 6) {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   return Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
@@ -14,6 +16,12 @@ function uniqueColor(existing: string[]) {
   const palette = ['#ef4444','#f97316','#f59e0b','#22c55e','#06b6d4','#3b82f6','#a855f7','#ec4899','#eab308','#10b981','#38bdf8','#60a5fa'];
   for (const c of palette) { if (!existing.includes(c)) return c; }
   return palette[Math.floor(Math.random() * palette.length)];
+}
+
+async function dataUrlToFile(dataUrl: string, filename: string): Promise<File> {
+  const res = await fetch(dataUrl);
+  const blob = await res.blob();
+  return new File([blob], filename, { type: blob.type || 'image/png' });
 }
 
 export default function Join({
@@ -31,7 +39,7 @@ export default function Join({
   useEffect(() => {
     if (mode === 'create' && groupId) {
       const url = `${location.origin}/#/${groupId}`;
-      QRCode.toDataURL(url, { width: 240 }).then(setQrDataUrl).catch(() => setQrDataUrl(null));
+      QRCode.toDataURL(url, { width: 512, margin: 1 }).then(setQrDataUrl).catch(() => setQrDataUrl(null));
     } else {
       setQrDataUrl(null);
     }
@@ -41,7 +49,6 @@ export default function Join({
     await ensureAnonAuth();
     const id = randomId();
     setGroupId(id);
-    // Minimal metadata — keeps doc around for members/locations
     await setDoc(doc(db, 'groups', id), { createdAt: Date.now() }, { merge: true });
     setColor(uniqueColor([]));
   };
@@ -55,6 +62,10 @@ export default function Join({
     const me = { uid, name: (name || `Friend-${uid.slice(-4)}`).trim(), color };
 
     await setDoc(memberRef, me, { merge: true });
+    // persist identity (generic + per-group)
+    localStorage.setItem(STORAGE_ME, JSON.stringify(me));
+    localStorage.setItem(`${STORAGE_ME}.${gid}`, JSON.stringify(me));
+
     onJoined(gid, me);
   };
 
@@ -63,11 +74,25 @@ export default function Join({
     const url = `${location.origin}/#/${groupId}`;
     setSharing(true);
     try {
-      const canShare = (navigator as any).share && typeof (navigator as any).share === 'function';
-      if (canShare) {
+      // Prefer sharing the QR image if we have it
+      if (qrDataUrl) {
+        const file = await dataUrlToFile(qrDataUrl, `friend-compass-${groupId}.png`);
+        const canShareFile = (navigator as any).canShare && (navigator as any).canShare({ files: [file] });
+        if (canShareFile) {
+          await (navigator as any).share({
+            title: 'Join my Friend Compass group',
+            text: `Scan or open link to join. Group: ${groupId}`,
+            files: [file],
+          });
+          setSharing(false);
+          return;
+        }
+      }
+      // Fallback: share link via Web Share or copy to clipboard
+      if ((navigator as any).share) {
         await (navigator as any).share({
           title: 'Join my Friend Compass group',
-          text: `Group code: ${groupId}`,
+          text: `Group: ${groupId}`,
           url,
         });
       } else {
@@ -75,10 +100,14 @@ export default function Join({
         alert('Invite link copied to clipboard!');
       }
     } catch {
-      try {
-        await navigator.clipboard.writeText(url);
-        alert('Invite link copied to clipboard!');
-      } catch {}
+      // Final fallback: open QR in new tab for manual save
+      if (qrDataUrl) {
+        const a = document.createElement('a');
+        a.href = qrDataUrl;
+        a.download = `friend-compass-${groupId}.png`;
+        a.target = '_blank';
+        a.click();
+      }
     } finally {
       setSharing(false);
     }
@@ -133,7 +162,7 @@ export default function Join({
                   onClick={shareInvite}
                   disabled={sharing}
                 >
-                  {sharing ? 'Sharing…' : 'Share invite'}
+                  {sharing ? 'Sharing…' : 'Share invite (QR)'}
                 </button>
               </div>
 
@@ -161,7 +190,7 @@ export default function Join({
               </div>
 
               <div className="pt-1 text-xs text-slate-400 text-center">
-                Anyone can join via link:{' '}
+                Link:{' '}
                 <span className="underline break-all">{`${location.origin}/#/${groupId}`}</span>
               </div>
             </div>

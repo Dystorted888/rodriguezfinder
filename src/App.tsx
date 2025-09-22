@@ -2,9 +2,9 @@ import React, { useEffect, useState } from 'react';
 import Join from './components/Join';
 import Compass from './components/Compass';
 import PermissionsGate from './components/PermissionsGate';
+import VersionBadge from './components/VersionBadge';
 import { useStore } from './store';
 import { useOrientation } from './hooks/useOrientation';
-import VersionBadge from './components/VersionBadge';
 import { ensureAnonAuth } from './firebase';
 
 const STORAGE_ME = 'fc.me';
@@ -15,76 +15,115 @@ function parseHash(): string | null {
   return m ? m[1] : null;
 }
 
-export default function App(){
-  const { groupId, setGroup, setMe } = useStore();
+export default function App() {
+  const { groupId, me, setGroup, setMe } = useStore();
   const { requestPermission } = useOrientation();
   const [needsPerm, setNeedsPerm] = useState(true);
 
-  // On first load & on hash change, set group; restore me if we have it
+  // Keep store in sync with URL hash and localStorage
   useEffect(() => {
     const setFromHash = async () => {
       const gid = parseHash();
-      if (gid) {
-        setGroup(gid);
-        localStorage.setItem(STORAGE_GROUP, gid);
-        await ensureAnonAuth();
-        const raw = localStorage.getItem(`${STORAGE_ME}.${gid}`) || localStorage.getItem(STORAGE_ME);
-        if (raw) {
-          try {
-            const me = JSON.parse(raw);
-            if (me?.uid && me?.name && me?.color) setMe(me);
-          } catch {}
-        }
+      if (!gid) return;
+
+      setGroup(gid);
+      localStorage.setItem(STORAGE_GROUP, gid);
+
+      await ensureAnonAuth();
+
+      // Prefer per-group saved identity
+      const rawGroupMe = localStorage.getItem(`${STORAGE_ME}.${gid}`);
+      const rawGenericMe = localStorage.getItem(STORAGE_ME);
+      const raw = rawGroupMe || rawGenericMe;
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed?.uid && parsed?.name && parsed?.color) {
+            setMe(parsed);
+          }
+        } catch {}
       }
     };
+
     setFromHash();
     const onHash = () => setFromHash();
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, [setGroup, setMe]);
 
-  // Resume last session if no hash
+  // If no hash, resume last group
   useEffect(() => {
     if (parseHash()) return;
     const last = localStorage.getItem(STORAGE_GROUP);
-    if (last) {
-      history.replaceState(null,'',`#/${last}`);
-    }
+    if (last) history.replaceState(null, '', `#/${last}`);
   }, []);
 
-  const onJoined = (gid:string, me:any) => {
+  const onJoined = (gid: string, meObj: any) => {
     setGroup(gid);
-    setMe(me);
-    localStorage.setItem(`${STORAGE_ME}.${gid}`, JSON.stringify(me));
-    localStorage.setItem(STORAGE_ME, JSON.stringify(me));
+    setMe(meObj);
+    localStorage.setItem(`${STORAGE_ME}.${gid}`, JSON.stringify(meObj));
+    localStorage.setItem(STORAGE_ME, JSON.stringify(meObj));
     localStorage.setItem(STORAGE_GROUP, gid);
-    history.replaceState(null,'',`#/${gid}`);
+    history.replaceState(null, '', `#/${gid}`);
     setNeedsPerm(true);
   };
 
-  // 👇 NEW: Quit group
+  // Quit group clears only the session binding to the group; keeps generic fc.me
   const quitGroup = () => {
     const gid = parseHash() || localStorage.getItem(STORAGE_GROUP);
-    if (gid) {
-      localStorage.removeItem(`${STORAGE_ME}.${gid}`);
-    }
+    if (gid) localStorage.removeItem(`${STORAGE_ME}.${gid}`);
     localStorage.removeItem(STORAGE_GROUP);
-    // keep generic fc.me so the user’s name/color can prefill next time
     setMe(null);
     setGroup(null);
-    history.replaceState(null,'','#/'); // go back to root
+    history.replaceState(null, '', '#/');
   };
+
+  const deepLinkedGroup = parseHash();
+  const havePerGroupIdentity =
+    !!(deepLinkedGroup && localStorage.getItem(`${STORAGE_ME}.${deepLinkedGroup}`));
+
+  // If deep-linked into a group without a saved identity, force Join in "join" mode.
+  if (!me && deepLinkedGroup && !havePerGroupIdentity) {
+    return (
+      <>
+        <Join
+          onJoined={onJoined}
+          initialGroupId={deepLinkedGroup}
+          forceJoin
+        />
+        <VersionBadge />
+      </>
+    );
+  }
 
   return (
     <div className="h-full">
       {!groupId ? (
-        <Join onJoined={onJoined}/>
+        <>
+          <Join onJoined={onJoined} />
+          <VersionBadge />
+        </>
+      ) : !me ? (
+        <>
+          <Join onJoined={onJoined} initialGroupId={groupId} forceJoin />
+          <VersionBadge />
+        </>
       ) : needsPerm ? (
-        <PermissionsGate onEnableCompass={async ()=>{ await requestPermission(); setNeedsPerm(false); }} />
+        <>
+          <PermissionsGate
+            onEnableCompass={async () => {
+              await requestPermission();
+              setNeedsPerm(false);
+            }}
+          />
+          <VersionBadge />
+        </>
       ) : (
-        <Compass onQuit={quitGroup} />
+        <>
+          <Compass onQuit={quitGroup} />
+          <VersionBadge />
+        </>
       )}
-      <VersionBadge />
     </div>
   );
 }

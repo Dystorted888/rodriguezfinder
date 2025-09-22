@@ -7,8 +7,8 @@ import { useOrientation } from './hooks/useOrientation';
 import VersionBadge from './components/VersionBadge';
 import { ensureAnonAuth } from './firebase';
 
-const STORAGE_ME = 'fc.me';       // stores { uid, name, color }
-const STORAGE_GROUP = 'fc.group'; // stores last groupId
+const STORAGE_ME = 'fc.me';
+const STORAGE_GROUP = 'fc.group';
 
 function parseHash(): string | null {
   const m = location.hash.match(/#\/([\w-]+)/);
@@ -27,9 +27,7 @@ export default function App(){
       if (gid) {
         setGroup(gid);
         localStorage.setItem(STORAGE_GROUP, gid);
-        // ensure auth exists for writes
         await ensureAnonAuth();
-        // restore identity if present
         const raw = localStorage.getItem(`${STORAGE_ME}.${gid}`) || localStorage.getItem(STORAGE_ME);
         if (raw) {
           try {
@@ -40,19 +38,17 @@ export default function App(){
       }
     };
     setFromHash();
-
     const onHash = () => setFromHash();
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, [setGroup, setMe]);
 
-  // Also try to resume last session if there is no hash (e.g., user opened root)
+  // Resume last session if no hash
   useEffect(() => {
     if (parseHash()) return;
     const last = localStorage.getItem(STORAGE_GROUP);
     if (last) {
       history.replaceState(null,'',`#/${last}`);
-      // the effect above will catch and restore
     }
   }, []);
 
@@ -66,6 +62,19 @@ export default function App(){
     setNeedsPerm(true);
   };
 
+  // 👇 NEW: Quit group
+  const quitGroup = () => {
+    const gid = parseHash() || localStorage.getItem(STORAGE_GROUP);
+    if (gid) {
+      localStorage.removeItem(`${STORAGE_ME}.${gid}`);
+    }
+    localStorage.removeItem(STORAGE_GROUP);
+    // keep generic fc.me so the user’s name/color can prefill next time
+    setMe(null);
+    setGroup(null);
+    history.replaceState(null,'','#/'); // go back to root
+  };
+
   return (
     <div className="h-full">
       {!groupId ? (
@@ -73,7 +82,7 @@ export default function App(){
       ) : needsPerm ? (
         <PermissionsGate onEnableCompass={async ()=>{ await requestPermission(); setNeedsPerm(false); }} />
       ) : (
-        <Compass />
+        <Compass onQuit={quitGroup} />
       )}
       <VersionBadge />
     </div>

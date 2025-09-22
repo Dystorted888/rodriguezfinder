@@ -186,7 +186,9 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
       : true;
 
     const dueHeartbeat = (now - last) >= CFG.heartbeatMs;
-    the const dueMotion    = (now - last) >= CFG.motionWriteMinMs && (moved >= CFG.minMoveForWriteM || accImproved);
+    const dueMotion =
+  (now - last) >= CFG.motionWriteMinMs &&
+  (moved >= CFG.minMoveForWriteM || accImproved);
 
     if (!dueHeartbeat && !dueMotion) return;
 

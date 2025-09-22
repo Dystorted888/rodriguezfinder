@@ -26,31 +26,45 @@ function smoothLL(prev: {lat:number,lng:number}|null, next: {lat:number,lng:numb
     lng: prev.lng + alpha * (next.lng - prev.lng),
   };
 }
-function smoothScalar(prev: number | null, next: number, alpha = 0.35) {
+function smoothScalar(prev: number | null, next: number, alpha = 0.55) {
   if (prev == null) return next;
-  return prev + alpha * (next - prev);
+  return prev + alpha * (next - prev); // faster response so meters change quickly
 }
 // angle smoothing with deadband & slew-limit
-function smoothAngle(prev: number | null, next: number, alpha = 0.25, dead = 3, maxStep = 10) {
+function smoothAngle(prev: number | null, next: number, alpha = 0.5, dead = 5, maxStep = 6) {
   if (prev == null) return next;
   let d = next - prev;
   if (d > 180) d -= 360;
   if (d < -180) d += 360;
-  if (Math.abs(d) < dead) return prev;                 // deadband
-  const step = Math.sign(d) * Math.min(Math.abs(d), maxStep); // slew limit (deg per update)
+  if (Math.abs(d) < dead) return prev;                 // ignore micro-jitter
+  const step = Math.sign(d) * Math.min(Math.abs(d), maxStep); // glide towards target
   const blended = prev + alpha * step;
   return (blended + 360) % 360;
 }
 function roundSmart(m: number) {
-  if (m < 20) return Math.max(1, Math.round(m));        // 1m steps
-  if (m < 100) return Math.round(m / 5) * 5;            // 5m steps
-  return Math.round(m / 10) * 10;                       // 10m steps
+  if (m < 20) return Math.max(1, Math.round(m));        // 1 m steps
+  if (m < 100) return Math.round(m / 5) * 5;            // 5 m steps
+  return Math.round(m / 10) * 10;                       // 10 m steps
 }
 function fmtLastSeen(ms: number) {
   const s = Math.floor(ms / 1000);
   const mm = Math.floor(s / 60);
   const ss = s % 60;
   return mm ? `${mm}m${ss.toString().padStart(2,'0')}s` : `${ss}s`;
+}
+
+// circular variance to judge heading stability
+function circularVariance(samples: number[]) {
+  if (samples.length === 0) return Infinity;
+  const toRad = (d:number)=>d*Math.PI/180;
+  let sumSin=0, sumCos=0;
+  for(const a of samples){
+    const r = toRad(a);
+    sumCos += Math.cos(r);
+    sumSin += Math.sin(r);
+  }
+  const R = Math.sqrt(sumCos*sumCos + sumSin*sumSin) / samples.length; // 0..1
+  return 1 - R; // 0 stable … 1 very noisy
 }
 
 export default function Compass() {
@@ -72,6 +86,15 @@ export default function Compass() {
   const distSmoothRef = useRef<Record<string, number | null>>({});
   const distWindowRef = useRef<Record<string, number[]>>({});
   const angleSmoothRef = useRef<Record<string, number | null>>({});
+
+  // heading stability buffer (last ~12 samples)
+  const headingBufRef = useRef<number[]>([]);
+  useEffect(()=>{
+    if (deviceHeading == null) return;
+    const buf = headingBufRef.current;
+    buf.push(deviceHeading);
+    if (buf.length > 12) buf.shift();
+  },[deviceHeading]);
 
   // subscribe to members & locations
   useEffect(() => {
@@ -145,20 +168,20 @@ export default function Compass() {
         const theirAcc = typeof loc.accuracy === 'number' ? loc.accuracy : undefined;
         const myAcc = geo.accuracy ?? undefined;
 
-        // corrected distance: subtract a portion of combined accuracy bubble
+        // corrected distance: subtract a *smaller* portion of the accuracy bubble so it doesn't clamp to 0
         const sigma = Math.hypot(myAcc ?? 20, theirAcc ?? 20);
-        const corrected = Math.max(0, rawDist - 0.6 * sigma);
+        const corrected = Math.max(0, rawDist - 0.3 * sigma); // was 0.6
 
-        // median-of-5 window to remove spikes
+        // median-of-3 (faster reaction)
         const arr = distWindowRef.current[uid] ?? [];
         arr.push(corrected);
-        if (arr.length > 5) arr.shift();
+        if (arr.length > 3) arr.shift();
         distWindowRef.current[uid] = arr.slice();
         const median = [...arr].sort((a,b)=>a-b)[Math.floor(arr.length/2)];
 
-        // EMA on top
+        // EMA on top (faster alpha)
         const prevD = distSmoothRef.current[uid] ?? null;
-        const dispD = smoothScalar(prevD, median, 0.35);
+        const dispD = smoothScalar(prevD, median, 0.55);
         distSmoothRef.current[uid] = dispD;
 
         return {
@@ -173,16 +196,30 @@ export default function Compass() {
       .sort((a: any, b: any) => a.distDisp - b.distDisp);
   }, [me, geo, locations, members]);
 
-  // compute rotation with per-friend smoothing
+  // pick a stable heading: compass if stable, else GPS course if moving, else freeze last stable
+  const stableHeading = (() => {
+    const h = deviceHeading;
+    const buf = headingBufRef.current;
+    const varH = (buf.length >= 6) ? circularVariance(buf) : 0;
+    const compassStable = h != null && varH < 0.15; // 0 (stable)…1 (noisy)
+    const gpsOk = (geo?.speed ?? 0) > 0.3 && (geo?.headingFromGPS != null);
+
+    if (compassStable) return h!;
+    if (gpsOk) return geo!.headingFromGPS!;
+    // else: return null to freeze arrow at last smoothed angle
+    return null;
+  })();
+
+  // compute rotation with per-friend smoothing; freeze when heading unstable
   const getRot = (uid: string, b: number) => {
-    const gpsHeading = (geo?.speed && geo.speed > 0.5) ? (geo.headingFromGPS ?? null) : null;
-    const effective = deviceHeading ?? gpsHeading;
-    if (effective == null) return 0;
-    let r = (b - effective + 360) % 360;
+    const eff = stableHeading;
+    // if heading not stable, keep last rotation (do not whip arrow)
+    if (eff == null) return angleSmoothRef.current[uid] ?? 0;
+    let r = (b - eff + 360) % 360;
     if (flip) r = (360 - r) % 360;
 
     const prev = angleSmoothRef.current[uid] ?? null;
-    const sm = smoothAngle(prev, r, 0.35, 3, 12); // alpha, deadband, max step per frame
+    const sm = smoothAngle(prev, r, 0.5, 5, 6); // stronger smoothing, wider deadband, smaller steps
     angleSmoothRef.current[uid] = sm;
     return sm ?? r;
   };
@@ -192,11 +229,13 @@ export default function Compass() {
     return rounded < 1000 ? `${rounded} m` : `${(rounded/1000).toFixed(1)} km`;
   };
 
-  const headingStatus = deviceHeading != null
-    ? `Compass: ${Math.round(deviceHeading)}°`
-    : (geo?.speed && geo.speed > 0.5 && geo?.headingFromGPS != null)
+  const headingStatus = stableHeading != null
+    ? `Heading: ${Math.round(stableHeading)}°`
+    : (geo?.speed && geo.speed > 0.3 && geo?.headingFromGPS != null)
       ? `GPS course: ${Math.round(geo.headingFromGPS!)}°`
-      : 'Heading: —';
+      : 'Heading: hold steady';
+
+  const headingUnstable = stableHeading == null;
 
   return (
     <div className="p-4 h-full flex flex-col">
@@ -213,6 +252,12 @@ export default function Compass() {
           </label>
         </div>
       </div>
+
+      {headingUnstable && (
+        <div className="text-center text-xs text-amber-300 mb-2">
+          Hold phone steady or move a few meters to stabilize direction.
+        </div>
+      )}
 
       <div className="flex-1 grid place-items-center">
         <div className="relative w-[320px] h-[320px] rounded-full border border-slate-700">

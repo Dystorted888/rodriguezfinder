@@ -4,6 +4,7 @@ import Compass from './components/Compass';
 import PermissionsGate from './components/PermissionsGate';
 import { useStore } from './store';
 import { useOrientation } from './hooks/useOrientation';
+import ErrorBoundary from './components/ErrorBoundary'; // ← add
 
 export default function App(){
   const { groupId, setGroup, setMe } = useStore();
@@ -22,15 +23,22 @@ export default function App(){
   };
 
   if(!groupId){
-    return <Join onJoined={onJoined}/>;
+    return (
+      <ErrorBoundary resetKeys={['nogroup']}>
+        <Join onJoined={onJoined}/>
+      </ErrorBoundary>
+    );
   }
 
   return (
     <div className="h-full">
-      {hasPermScreen && (
-        <PermissionsGate onEnableCompass={async ()=>{ await requestPermission(); setHasPermScreen(false); }} />
-      )}
-      {!hasPermScreen && <Compass />}
+      <ErrorBoundary resetKeys={[groupId, hasPermScreen]}>
+        {hasPermScreen ? (
+          <PermissionsGate onEnableCompass={async ()=>{ await requestPermission(); setHasPermScreen(false); }} />
+        ) : (
+          <Compass />
+        )}
+      </ErrorBoundary>
     </div>
   );
 }

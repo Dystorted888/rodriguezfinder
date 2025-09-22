@@ -4,7 +4,8 @@ import Compass from './components/Compass';
 import PermissionsGate from './components/PermissionsGate';
 import { useStore } from './store';
 import { useOrientation } from './hooks/useOrientation';
-import ErrorBoundary from './components/ErrorBoundary'; // ← add
+import ErrorBoundary from './components/ErrorBoundary'; 
+import VersionBadge from './components/VersionBadge';
 
 export default function App(){
   const { groupId, setGroup, setMe } = useStore();
@@ -41,4 +42,5 @@ export default function App(){
       </ErrorBoundary>
     </div>
   );
+  <VersionBadge />
 }

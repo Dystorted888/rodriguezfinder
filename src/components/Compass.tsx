@@ -1,4 +1,3 @@
-// src/components/Compass.tsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -22,6 +21,11 @@ function useWakeLock(active: boolean) {
     return () => { try { lock?.release?.(); } catch {} };
   }, [active]);
 }
+
+// iOS detection for tuning
+const isIOS =
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1);
 
 // ---------- helpers ----------
 function smoothLL(
@@ -161,32 +165,22 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
 
   // long-press on "N" toggles diagnostics
   const pressT = useRef<number>(0);
-  const onNDown = () => {
-    pressT.current = Date.now();
-  };
-  const onNUp = () => {
-    if (Date.now() - pressT.current > 500) setShowDiag((v) => !v);
-  };
+  const onNDown = () => { pressT.current = Date.now(); };
+  const onNUp = () => { if (Date.now() - pressT.current > 500) setShowDiag(v => !v); };
 
   // Firestore writes (heartbeat + motion)
   const lastWriteRef = useRef(0);
-  const lastSentRef = useRef<{ lat: number; lng: number; acc?: number } | null>(
-    null
-  );
+  const lastSentRef = useRef<{ lat: number; lng: number; acc?: number } | null>(null);
 
   // smoothing refs
   const mySmoothRef = useRef<{ lat: number; lng: number } | null>(null);
-  const friendSmoothRef = useRef<Record<string, { lat: number; lng: number }>>(
-    {}
-  );
+  const friendSmoothRef = useRef<Record<string, { lat: number; lng: number }>>({});
   const distSmoothRef = useRef<Record<string, number | null>>({});
   const distWindowRef = useRef<Record<string, number[]>>({});
   const angleSmoothRef = useRef<Record<string, number | null>>({});
 
-  // NEW: per-friend last "good" fix to reject spikes
-  const lastGoodRef = useRef<
-    Record<string, { pos: { lat: number; lng: number }; t: number }>
-  >({});
+  // per-friend last "good" fix to reject spikes
+  const lastGoodRef = useRef<Record<string, { pos: { lat: number; lng: number }; t: number }>>({});
 
   // heading stability buffer
   const headingBufRef = useRef<number[]>([]);
@@ -200,26 +194,17 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
   // subscribe to members & locations
   useEffect(() => {
     if (!groupId) return;
-    const unsubMembers = onSnapshot(
-      collection(db, 'groups', groupId, 'members'),
-      (snap) => {
-        const m: any = {};
-        snap.forEach((d) => (m[d.id] = d.data()));
-        setMembers(m);
-      }
-    );
-    const unsubLoc = onSnapshot(
-      collection(db, 'groups', groupId, 'locations'),
-      (snap) => {
-        const l: any = {};
-        snap.forEach((d) => (l[d.id] = d.data()));
-        setLocations(l);
-      }
-    );
-    return () => {
-      unsubMembers();
-      unsubLoc();
-    };
+    const unsubMembers = onSnapshot(collection(db, 'groups', groupId, 'members'), (snap) => {
+      const m: any = {};
+      snap.forEach((d) => (m[d.id] = d.data()));
+      setMembers(m);
+    });
+    const unsubLoc = onSnapshot(collection(db, 'groups', groupId, 'locations'), (snap) => {
+      const l: any = {};
+      snap.forEach((d) => (l[d.id] = d.data()));
+      setLocations(l);
+    });
+    return () => { unsubMembers(); unsubLoc(); };
   }, [groupId, setMembers, setLocations]);
 
   // write my location (heartbeat every 15s; motion ≥ 2.5s)
@@ -228,10 +213,7 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
     const now = Date.now();
     const last = lastWriteRef.current;
     const moved = lastSentRef.current
-      ? haversine(
-          { lat: geo.lat, lng: geo.lng },
-          { lat: lastSentRef.current.lat, lng: lastSentRef.current.lng }
-        )
+      ? haversine({ lat: geo.lat, lng: geo.lng }, { lat: lastSentRef.current.lat, lng: lastSentRef.current.lng })
       : Infinity;
     const accImproved =
       lastSentRef.current?.acc != null && geo.accuracy != null
@@ -239,35 +221,23 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
         : true;
 
     const dueHeartbeat = now - last >= CFG.heartbeatMs;
-    const dueMotion =
-      now - last >= CFG.motionWriteMinMs &&
-      (moved >= CFG.minMoveForWriteM || accImproved);
+    const dueMotion = now - last >= CFG.motionWriteMinMs && (moved >= CFG.minMoveForWriteM || accImproved);
 
     if (!dueHeartbeat && !dueMotion) return;
 
     lastWriteRef.current = now;
-    lastSentRef.current = {
-      lat: geo.lat,
-      lng: geo.lng,
-      acc: geo.accuracy ?? undefined,
-    };
+    lastSentRef.current = { lat: geo.lat, lng: geo.lng, acc: geo.accuracy ?? undefined };
 
     const myRef = doc(db, 'groups', groupId, 'locations', me.uid);
     const expireAt = new Date(Date.now() + 12 * 60 * 60 * 1000);
     setDoc(
       myRef,
-      {
-        lat: geo.lat,
-        lng: geo.lng,
-        accuracy: geo.accuracy ?? null,
-        updatedAt: Date.now(),
-        expireAt,
-      },
+      { lat: geo.lat, lng: geo.lng, accuracy: geo.accuracy ?? null, updatedAt: Date.now(), expireAt },
       { merge: true }
     );
   }, [groupId, me, geo]);
 
-  // compute others (adaptive distance + outlier guard)
+  // compute others (adaptive distance + outlier guard; iOS tuning)
   const others = useMemo(() => {
     if (!me || !geo) return [] as any[];
 
@@ -284,12 +254,10 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
         if (!member || !loc) return null;
 
         let theirRaw = { lat: Number(loc.lat), lng: Number(loc.lng) };
-        if (!Number.isFinite(theirRaw.lat) || !Number.isFinite(theirRaw.lng))
-          return null;
+        if (!Number.isFinite(theirRaw.lat) || !Number.isFinite(theirRaw.lng)) return null;
 
         const age = Date.now() - (loc.updatedAt || 0);
-        const acc =
-          typeof loc.accuracy === 'number' ? (loc.accuracy as number) : undefined;
+        const acc = typeof loc.accuracy === 'number' ? (loc.accuracy as number) : undefined;
 
         // reject very inaccurate fresh fixes
         if (acc != null && acc > 120 && age < 8000) {
@@ -322,33 +290,28 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
 
         // distance correction using combined sigma
         const sigma = Math.hypot(geo.accuracy ?? 20, acc ?? 20);
-        const corrected = Math.max(0, rawDist - CFG.accuracySubtractK * sigma);
 
-        // median-of-window to calm jitter
+        // Heavier correction on iOS when accuracy is poor
+        const kBase = CFG.accuracySubtractK;
+        const k = isIOS ? (sigma > 30 ? kBase * 0.9 : kBase * 0.75) : kBase;
+        const corrected = Math.max(0, rawDist - k * sigma);
+
+        // median-of-window to calm jitter (slightly larger on iOS)
+        const win = isIOS ? CFG.distMedianWindow + 1 : CFG.distMedianWindow;
         const arr = distWindowRef.current[uid] ?? [];
         arr.push(corrected);
-        if (arr.length > CFG.distMedianWindow) arr.shift();
+        if (arr.length > win) arr.shift();
         distWindowRef.current[uid] = arr.slice();
-        const median =
-          [...arr].sort((a, b) => a - b)[Math.floor(arr.length / 2)];
+        const median = [...arr].sort((a, b) => a - b)[Math.floor(arr.length / 2)];
 
-        // adaptive EMA: calmer when I'm still
-        const alpha = iAmStill
-          ? Math.min(CFG.distEmaAlpha, 0.45)
-          : Math.max(CFG.distEmaAlpha, 0.65);
+        // adaptive EMA: calmer when I'm still; a touch calmer on iOS
+        let alpha = iAmStill ? Math.min(CFG.distEmaAlpha, 0.42) : Math.max(CFG.distEmaAlpha, 0.62);
+        if (isIOS) alpha -= 0.03;
         const prevD = distSmoothRef.current[uid] ?? null;
         const dispD = smoothScalar(prevD, median, alpha);
         distSmoothRef.current[uid] = dispD;
 
-        return {
-          uid,
-          member,
-          distDisp: dispD,
-          bear,
-          age,
-          accuracy: acc,
-          myAcc: geo.accuracy ?? undefined,
-        };
+        return { uid, member, distDisp: dispD, bear, age, accuracy: acc, myAcc: geo.accuracy ?? undefined };
       })
       .filter(Boolean)
       .sort((a: any, b: any) => a.distDisp - b.distDisp);
@@ -358,13 +321,8 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
   const headingBuf = headingBufRef.current;
   const varH = headingBuf.length >= 6 ? circularVariance(headingBuf) : 0;
   const compassStable = deviceHeading != null && varH < CFG.headingVarianceStable;
-  const gpsOk =
-    (geo?.speed ?? 0) > CFG.gpsCourseMinSpeed && geo?.headingFromGPS != null;
-  const stableHeading = compassStable
-    ? (deviceHeading as number)
-    : gpsOk
-    ? (geo!.headingFromGPS as number)
-    : null;
+  const gpsOk = (geo?.speed ?? 0) > CFG.gpsCourseMinSpeed && geo?.headingFromGPS != null;
+  const stableHeading = compassStable ? (deviceHeading as number) : gpsOk ? (geo!.headingFromGPS as number) : null;
 
   const unstableSinceRef = useRef<number | null>(null);
   if (stableHeading == null) {
@@ -372,9 +330,7 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
   } else {
     unstableSinceRef.current = null;
   }
-  const showHint =
-    unstableSinceRef.current != null &&
-    Date.now() - unstableSinceRef.current > CFG.unstableFreezeMs;
+  const showHint = unstableSinceRef.current != null && Date.now() - unstableSinceRef.current > CFG.unstableFreezeMs;
 
   // rotation with adaptive smoothing
   const getRot = (uid: string, b: number) => {
@@ -422,11 +378,8 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
     if (!groupId) return;
     const url = `${location.origin}/#/${groupId}`;
     try {
-      await (navigator as any).share?.({
-        title: 'Join my Friend Compass',
-        text: `Group ${groupId}`,
-        url,
-      }) ?? navigator.clipboard.writeText(url);
+      await (navigator as any).share?.({ title: 'Join my Friend Compass', text: `Group ${groupId}`, url }) ??
+        navigator.clipboard.writeText(url);
       alert('Invite link shared/copied!');
     } catch {}
   };
@@ -436,25 +389,14 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
       <div className="flex items-center justify-between gap-2">
         <div className="text-sm text-slate-400">
           Group: <span className="font-mono">{groupId}</span>
-          <button className="ml-2 text-xs underline" onClick={shareGroup}>
-            Share
-          </button>
+          <button className="ml-2 text-xs underline" onClick={shareGroup}>Share</button>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-xs text-slate-400 hidden sm:inline">
-            {headingStatus}
-          </span>
-          <button
-            className="text-xs px-2 py-1 rounded-lg bg-slate-800 border border-slate-700"
-            onClick={requestPermission}
-          >
+          <span className="text-xs text-slate-400 hidden sm:inline">{headingStatus}</span>
+          <button className="text-xs px-2 py-1 rounded-lg bg-slate-800 border border-slate-700" onClick={requestPermission}>
             Re-enable compass
           </button>
-          <button
-            className="text-xs px-2 py-1 rounded-lg bg-red-600 hover:bg-red-500"
-            onClick={quit}
-            aria-label="Quit group"
-          >
+          <button className="text-xs px-2 py-1 rounded-lg bg-red-600 hover:bg-red-500" onClick={quit} aria-label="Quit group">
             Quitter le groupe
           </button>
         </div>
@@ -473,18 +415,12 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
           {/* N marker with diagnostics long-press */}
           <div
             className="absolute left-1/2 -translate-x-1/2 -top-5 text-slate-400 select-none"
-            onMouseDown={onNDown}
-            onMouseUp={onNUp}
-            onTouchStart={onNDown}
-            onTouchEnd={onNUp}
-          >
-            N
-          </div>
+            onMouseDown={onNDown} onMouseUp={onNUp} onTouchStart={onNDown} onTouchEnd={onNUp}
+          >N</div>
 
           {others.map((o) => {
             if (focused && o.uid !== focused) return null;
-            const hide = o.age > CFG.hideAfterMs;
-            if (hide) return null;
+            const hide = o.age > CFG.hideAfterMs; if (hide) return null;
 
             const displayDist = Math.max(0, o.distDisp ?? 0);
             const rot = getRot(o.uid, o.bear);
@@ -495,41 +431,16 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
             const dirText = showDirText ? hintFor(o.bear) : null;
 
             return (
-              <div
-                key={o.uid}
-                className="absolute left-1/2 top-1/2"
-                style={{ transform: `translate(-50%,-50%) rotate(${rot}deg)` }}
-              >
-                <svg
-                  width="300"
-                  height="300"
-                  viewBox="0 0 300 300"
-                  style={{ opacity: old ? 0.75 : 0.95 }}
-                >
-                  <line
-                    x1="150"
-                    y1="150"
-                    x2="150"
-                    y2="28"
-                    stroke={o.member.color}
-                    strokeWidth="6"
-                    strokeDasharray={veryOld ? '4,6' : undefined}
-                  />
+              <div key={o.uid} className="absolute left-1/2 top-1/2" style={{ transform: `translate(-50%,-50%) rotate(${rot}deg)` }}>
+                <svg width="300" height="300" viewBox="0 0 300 300" style={{ opacity: old ? 0.75 : 0.95 }}>
+                  <line x1="150" y1="150" x2="150" y2="28" stroke={o.member.color} strokeWidth="6" strokeDasharray={veryOld ? '4,6' : undefined} />
                   <polygon points="150,12 162,32 138,32" fill={o.member.color} />
                 </svg>
-                <div
-                  className="absolute -top-10 left-1/2 -translate-x-1/2 text-sm"
-                  style={{ color: o.member.color }}
-                >
+                <div className="absolute -top-10 left-1/2 -translate-x-1/2 text-sm" style={{ color: o.member.color }}>
                   <div className="px-2 py-0.5 rounded-full bg-black/40 backdrop-blur">
                     {o.member.name} · {formatDist(displayDist)}
                     {o.accuracy
-                      ? ` · ±${Math.max(
-                          3,
-                          Math.round(
-                            Math.min(15, 0.5 * Math.hypot(o.myAcc ?? 20, o.accuracy))
-                          )
-                        )}m`
+                      ? ` · ±${Math.max(3, Math.round(Math.min(15, 0.5 * Math.hypot(o.myAcc ?? 20, o.accuracy))))}m`
                       : ''}
                     {o.age > 15_000 ? ` · last ${fmtLastSeen(o.age)} ago` : ''}
                     {dirText ? ` · ${dirText}` : ''}
@@ -552,17 +463,9 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
               key={o.uid}
               onClick={() => setFocused(focused === o.uid ? null : o.uid)}
               className="px-3 py-2 rounded-2xl bg-slate-800 text-sm"
-              style={{
-                border:
-                  focused === o.uid
-                    ? `2px solid ${o.member.color}`
-                    : '2px solid transparent',
-              }}
+              style={{ border: focused === o.uid ? `2px solid ${o.member.color}` : '2px solid transparent' }}
             >
-              <span
-                className="inline-block w-3 h-3 rounded-full mr-2"
-                style={{ background: o.member.color }}
-              />
+              <span className="inline-block w-3 h-3 rounded-full mr-2" style={{ background: o.member.color }} />
               {o.member.name}
             </button>
           ))}
@@ -571,30 +474,17 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
         {focused && (
           <div className="flex items-center gap-2 shrink-0">
             <label className="text-xs flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={cuesOn}
-                onChange={(e) => setCuesOn(e.target.checked)}
-              />
+              <input type="checkbox" checked={cuesOn} onChange={(e) => setCuesOn(e.target.checked)} />
               Vibration
             </label>
             {cuesOn && vibrateUnsupported && (
-              <span className="text-[11px] text-slate-400">
-                (vibration non supportée sur cet appareil)
-              </span>
+              <span className="text-[11px] text-slate-400">(vibration non supportée sur cet appareil)</span>
             )}
           </div>
         )}
       </div>
 
-      {showDiag && (
-        <Diagnostics
-          me={me}
-          geo={geo}
-          heading={deviceHeading ?? null}
-          groupId={groupId}
-        />
-      )}
+      {showDiag && <Diagnostics me={me} geo={geo} heading={deviceHeading ?? null} groupId={groupId} />}
     </div>
   );
 }

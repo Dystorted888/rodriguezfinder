@@ -24,21 +24,36 @@ export function useOrientation() {
   const raf = useRef<number | null>(null);
   const gotAbs = useRef(false);
 
+  // iOS: when compass accuracy is very poor, ignore samples briefly
+  const badUntil = useRef<number | null>(null);
+
   useEffect(() => {
     const has = typeof window !== 'undefined' && 'DeviceOrientationEvent' in window;
     setAvailable(has);
     if (!has) return;
 
-    const update = (alpha: number | null | undefined, webkit: number | undefined) => {
+    const update = (
+      alpha: number | null | undefined,
+      webkit: number | undefined,
+      wka?: number | undefined
+    ) => {
+      // If iOS provides a very poor accuracy, ignore for a short cooldown.
+      if (typeof wka === 'number' && wka > 25) {
+        badUntil.current = Date.now() + 1500; // 1.5s cooldown
+        return;
+      }
+      if (badUntil.current && Date.now() < badUntil.current) return;
+
       let h: number | null = null;
       if (typeof webkit === 'number') {
-        // iOS gives compass degrees clockwise from North
-        h = webkit;
+        // iOS gives compass degrees clockwise from North (already compass-like)
+        h = (webkit + 360) % 360;
       } else if (typeof alpha === 'number') {
         // Generic: convert device alpha to compass-like, then correct for screen orientation
         const base = (360 - alpha) % 360;
         h = (base + screenAngle()) % 360;
       }
+
       if (h != null) {
         const s = smooth(last.current, (h + 360) % 360, 0.12); // slightly stronger smoothing
         last.current = s;
@@ -47,8 +62,13 @@ export function useOrientation() {
       }
     };
 
-    const onAbs = (ev: any) => { gotAbs.current = true; update(ev.alpha, ev.webkitCompassHeading); };
-    const onRel = (ev: any) => { if (!gotAbs.current) update(ev.alpha, ev.webkitCompassHeading); };
+    const onAbs = (ev: any) => {
+      gotAbs.current = true;
+      update(ev.alpha, ev.webkitCompassHeading, ev.webkitCompassAccuracy);
+    };
+    const onRel = (ev: any) => {
+      if (!gotAbs.current) update(ev.alpha, ev.webkitCompassHeading, ev.webkitCompassAccuracy);
+    };
 
     window.addEventListener('deviceorientationabsolute', onAbs as any, true);
     window.addEventListener('deviceorientation', onRel as any, true);

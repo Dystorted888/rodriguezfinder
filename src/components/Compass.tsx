@@ -420,25 +420,25 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
                   <polygon points="150,12 162,32 138,32" fill={o.member.color} />
                 </svg>
 
-                {/* Friend label with avatar */}
-                <div className="absolute -top-12 left-1/2 -translate-x-1/2 text-sm" style={{ color: o.member.color }}>
-                  <div className="px-2 py-0.5 rounded-full bg-black/40 backdrop-blur flex items-center gap-1">
-                    {o.member.avatarId && (
-                      <span className="inline-flex items-center justify-center rounded-full bg-slate-900/50"
-                            style={{ width: 18, height: 18 }}>
-                        <AvatarIcon id={o.member.avatarId} size={18} />
-                      </span>
-                    )}
-                    <span>{o.member.name}</span>
-                    <span>· {formatDist(displayDist)}</span>
-                    {o.accuracy
-                      ? <span> · ±{Math.max(3, Math.round(Math.min(15, 0.5 * Math.hypot(o.myAcc ?? 20, o.accuracy))))}m</span>
-                      : null}
-                    {o.age > 15_000 ? <span> · last {fmtLastSeen(o.age)} ago</span> : null}
-                    {dirText ? <span> · {dirText}</span> : null}
-                  </div>
-                </div>
-              </div>
+								{/* Friend label — minimal */}
+				<div
+				  className="absolute -top-12 left-1/2 -translate-x-1/2 text-sm"
+				  style={{ color: o.member.color }}
+				>
+				  <div className="px-2 py-0.5 rounded-full bg-black/40 backdrop-blur flex items-center gap-1">
+					{o.member.avatarId && (
+					  <span
+						className="inline-flex items-center justify-center rounded-full bg-slate-900/50"
+						style={{ width: 18, height: 18 }}
+					  >
+						<AvatarIcon id={o.member.avatarId} size={18} />
+					  </span>
+					)}
+					<span>{o.member.name}</span>
+					<span>· {formatDist(displayDist)}</span>
+					{o.age > 15_000 ? <span> · last {fmtLastSeen(o.age)} ago</span> : null}
+				  </div>
+				</div>
             );
           })}
 

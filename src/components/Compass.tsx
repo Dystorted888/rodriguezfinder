@@ -368,12 +368,12 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
       <div className="flex items-center justify-between gap-2">
         <div className="text-sm text-slate-400">
           Group: <span className="font-mono">{groupId}</span>
-          <button className="ml-2 text-xs underline" onClick={shareGroup}>Share</button>
+          <button className="ml-2 text-xs underline" onClick={shareGroup}>Partager</button>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-slate-400 hidden sm:inline">{headingStatus}</span>
           <button className="text-xs px-2 py-1 rounded-lg bg-slate-800 border border-slate-700" onClick={requestPermission}>
-            Re-enable compass
+            Re-activer le compas
           </button>
           <button className="text-xs px-2 py-1 rounded-lg bg-red-600 hover:bg-red-500" onClick={quit} aria-label="Quit group">
             Quitter le groupe

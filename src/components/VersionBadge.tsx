@@ -1,5 +1,5 @@
 import React from 'react';
-import { APP_VERSION, APP_COMMIT, BUILD_TIME } from '../version';
+import { APP_VERSION, APP_COMMIT } from '../version';
 
 export default function VersionBadge() {
   return (

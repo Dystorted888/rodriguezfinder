@@ -1,6 +1,7 @@
 import { create } from 'zustand';
+import type { AvatarId } from './avatars';
 
-export type Member = { uid: string; name: string; color: string };
+export type Member = { uid: string; name: string; color: string; avatarId?: AvatarId };
 export type LocationDoc = { lat: number; lng: number; accuracy?: number; updatedAt: number; };
 
 type State = {

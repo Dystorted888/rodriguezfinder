@@ -1,34 +1,44 @@
 import React from 'react';
 import { AVATAR_IDS, AvatarId, AvatarIcon, avatarLabel } from '../avatars';
 
-type Props = {
+export default function AvatarPicker({
+  value,
+  onChange,
+}: {
   value: AvatarId | null;
   onChange: (id: AvatarId) => void;
-  disabled?: boolean;
-};
-
-export default function AvatarPicker({ value, onChange, disabled }: Props) {
+}) {
   return (
-    <div className="grid grid-cols-4 gap-3">
-      {AVATAR_IDS.map((id) => {
-        const selected = value === id;
-        return (
-          <button
-            key={id}
-            type="button"
-            disabled={disabled}
-            onClick={() => onChange(id)}
-            className={`p-2 rounded-2xl bg-slate-800 hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 transition
-              ${selected ? 'ring-2 ring-offset-2 ring-offset-slate-900 ring-blue-500' : ''}`}
-            aria-pressed={selected}
-            aria-label={avatarLabel(id)}
-            title={avatarLabel(id)}
-          >
-            <AvatarIcon id={id} size={52} />
-            <div className="mt-1 text-[11px] text-slate-300 truncate">{avatarLabel(id)}</div>
-          </button>
-        );
-      })}
+    <div className="space-y-2">
+      <div className="grid grid-cols-4 gap-3">
+        {AVATAR_IDS.map((id) => {
+          const selected = value === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => onChange(id)}
+              className={`rounded-2xl p-2 bg-slate-800/70 hover:bg-slate-800 border ${
+                selected ? 'border-blue-400 ring-2 ring-blue-400/40' : 'border-slate-700'
+              } flex flex-col items-center gap-1`}
+              aria-pressed={selected}
+              aria-label={avatarLabel(id)}
+            >
+              <div className="rounded-xl bg-slate-900/40 p-1">
+                <AvatarIcon id={id} size={44} />
+              </div>
+              <div className="text-[11px] leading-none text-slate-300 line-clamp-1">
+                {avatarLabel(id)}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {value && (
+        <div className="text-xs text-slate-400">
+          Sélectionné : <span className="text-slate-200">{avatarLabel(value)}</span>
+        </div>
+      )}
     </div>
   );
 }

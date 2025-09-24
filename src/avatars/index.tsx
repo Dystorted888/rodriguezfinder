@@ -19,6 +19,15 @@ export const AVATAR_IDS: AvatarId[] = [
   'trumpet',
   'cactus',
   'pinata',
+  'RodrigoElExctazy',
+  'KingRodriguez',
+  'ElCanna',
+  'GarciaCoca',
+  'GatoBurrito',
+  'Woofy',
+  'Jeffe',
+  'FatAlvaro',
+  'QueenTacos',
 ];
 
 // Optional: pretty label from the filename

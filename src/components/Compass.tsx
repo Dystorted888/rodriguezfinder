@@ -439,6 +439,7 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
     {o.age > 15_000 ? <span> · last {fmtLastSeen(o.age)} ago</span> : null}
   </div>
 </div>
+</div>
             );
           })}
 

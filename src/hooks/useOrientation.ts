@@ -39,7 +39,7 @@ export function useOrientation() {
     ) => {
       // If iOS provides a very poor accuracy, ignore for a short cooldown.
       if (typeof wka === 'number' && wka > 25) {
-        badUntil.current = Date.now() + 1500; // 1.5s cooldown
+        badUntil.current = Date.now() + 1000; // 1.5s cooldown
         return;
       }
       if (badUntil.current && Date.now() < badUntil.current) return;

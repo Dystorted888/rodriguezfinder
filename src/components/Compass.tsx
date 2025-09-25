@@ -295,7 +295,7 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
         const lastGood = lastGoodRef.current[uid];
         if (lastGood) {
           const jump = haversine(lastGood.pos, theirRaw);
-          if (jump > 60 && age < 6000) {
+          if (jump > 40 && age < 6000) {
             theirRaw = lastGood.pos;
           }
         }

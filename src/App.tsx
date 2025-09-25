@@ -121,7 +121,7 @@ export default function App() {
       ) : (
         <>
           <Compass onQuit={quitGroup} />
-          <VersionBadge />
+          
         </>
       )}
     </div>

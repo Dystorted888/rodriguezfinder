@@ -7,6 +7,20 @@ import ColorPicker from './ColorPicker';
 import AvatarPicker from './AvatarPicker';
 import type { AvatarId } from '../avatars';
 
+// iOS helpers for “Open in Chrome”
+function isIOS() {
+  return /iP(hone|ad|od)/i.test(navigator.userAgent);
+}
+function toChromeURL(url: string) {
+  try {
+    const u = new URL(url);
+    const scheme = u.protocol === 'https:' ? 'googlechromes:' : 'googlechrome:';
+    return `${scheme}//${u.host}${u.pathname}${u.search}${u.hash}`;
+  } catch {
+    return url;
+  }
+}
+
 function randomId(len = 6) {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   return Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
@@ -81,14 +95,21 @@ export default function Join({
     onJoined(gid, me);
   };
 
+  // UPDATED: copy-only sharing (no title/text), with iOS Chrome helper button in UI below
   const shareGroupLink = async () => {
     if (!groupId) return;
     const url = `${location.origin}/#/${groupId}`;
     try {
-      await (navigator as any).share?.({ title: 'Join my Rodriguez Finder', text: `Group ${groupId}`, url })
-        ?? navigator.clipboard.writeText(url);
-      alert('Invite link shared/copied!');
-    } catch {}
+      await navigator.clipboard.writeText(url);
+      alert(isIOS()
+        ? 'Lien copié. Collez-le dans la barre d’adresse de Chrome pour la meilleure expérience.'
+        : 'Link copied. Paste it in your browser address bar.');
+      return;
+    } catch {
+      try {
+        await (navigator as any).share?.({ url });
+      } catch {}
+    }
   };
 
   return (
@@ -117,7 +138,21 @@ export default function Join({
               <p className="text-slate-300">Partage ce code ou QR :</p>
               <div className="flex items-center justify-center text-3xl font-mono tracking-widest">{groupId}</div>
               {qrDataUrl && <img src={qrDataUrl} alt="QR pour rejoindre" className="mx-auto" />}
-              <button className="text-xs underline mx-auto block" onClick={shareGroupLink}>Partager</button>
+
+              <div className="flex items-center justify-center gap-3">
+                <button className="text-xs underline" onClick={shareGroupLink}>Partager (copie le lien)</button>
+                {isIOS() && (
+                  <button
+                    className="text-xs underline"
+                    onClick={() => {
+                      const url = `${location.origin}/#/${groupId}`;
+                      location.href = toChromeURL(url);
+                    }}
+                  >
+                    Ouvrir dans Chrome
+                  </button>
+                )}
+              </div>
 
               <div className="space-y-3">
                 <label className="text-sm text-slate-300">Ton pseudo</label>
@@ -162,13 +197,13 @@ export default function Join({
             value={name}
             onChange={e=>setName(e.target.value)}
             className="w-full p-3 rounded-2xl bg-slate-800 outline-none"
-            placeholder="Alex"
+            placeholder="Rodriguez"
           />
 
           <label className="text-sm text-slate-300">Ta couleur</label>
           <ColorPicker value={color} onChange={setColor} />
 
-          <label className="text-sm text-slate-300">Ton avatar</label>
+          <label className="text-sm text-slate-300">Ton Rodriguez Avatar</label>
           <AvatarPicker value={avatarId} onChange={setAvatarId} />
 
           <button

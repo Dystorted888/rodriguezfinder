@@ -24,6 +24,20 @@ function useWakeLock(active: boolean) {
   }, [active]);
 }
 
+// iOS helpers for “Open in Chrome”
+function isIOS() {
+  return /iP(hone|ad|od)/i.test(navigator.userAgent);
+}
+function toChromeURL(url: string) {
+  try {
+    const u = new URL(url);
+    const scheme = u.protocol === 'https:' ? 'googlechromes:' : 'googlechrome:';
+    return `${scheme}//${u.host}${u.pathname}${u.search}${u.hash}`;
+  } catch {
+    return url;
+  }
+}
+
 // helpers
 function smoothLL(prev: {lat:number,lng:number}|null, next: {lat:number,lng:number}, alpha = 0.25) {
   if (!prev) return next;
@@ -310,14 +324,21 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
       ? `GPS course: ${Math.round(geo.headingFromGPS!)}°`
       : 'Heading: hold steady';
 
+  // UPDATED: copy-only sharing, with iOS Chrome helper
   const shareGroup = async () => {
     if (!groupId) return;
     const url = `${location.origin}/#/${groupId}`;
     try {
-      await (navigator as any).share?.({ title: 'Join my Rodriguez Finder', text: `Group ${groupId}`, url }) ??
-            navigator.clipboard.writeText(url);
-      alert('Invite link shared/copied!');
-    } catch {}
+      await navigator.clipboard.writeText(url);
+      alert(isIOS()
+        ? 'Lien copié. Collez-le dans la barre d’adresse de Chrome pour la meilleure expérience.'
+        : 'Link copied. Paste it in your browser address bar.');
+      return;
+    } catch {
+      try {
+        await (navigator as any).share?.({ url });
+      } catch {}
+    }
   };
 
   return (
@@ -325,7 +346,18 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
       <div className="flex items-center justify-between gap-2">
         <div className="text-sm text-slate-400">
           Group: <span className="font-mono">{groupId}</span>
-          <button className="ml-2 text-xs underline" onClick={shareGroup}>Partager</button>
+          <button className="ml-2 text-xs underline" onClick={shareGroup}>Partager (copie le lien)</button>
+          {isIOS() && (
+            <button
+              className="ml-2 text-xs underline"
+              onClick={() => {
+                const url = `${location.origin}/#/${groupId}`;
+                location.href = toChromeURL(url);
+              }}
+            >
+              Ouvrir dans Chrome
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-slate-400 hidden sm:inline">{headingStatus}</span>

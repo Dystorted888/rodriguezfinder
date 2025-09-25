@@ -20,7 +20,11 @@ function useWakeLock(active: boolean) {
         }
       } catch {}
     })();
-    return () => { try { lock?.release?.(); } catch {} };
+    return () => {
+      try {
+        lock?.release?.();
+      } catch {}
+    };
   }, [active]);
 }
 
@@ -162,20 +166,30 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
 
   // long-press on "N" toggles diagnostics
   const pressT = useRef<number>(0);
-  const onNDown = () => { pressT.current = Date.now(); };
-  const onNUp = () => { if (Date.now() - pressT.current > 500) setShowDiag(v => !v); };
+  const onNDown = () => {
+    pressT.current = Date.now();
+  };
+  const onNUp = () => {
+    if (Date.now() - pressT.current > 500) setShowDiag((v) => !v);
+  };
 
   // Firestore writes (heartbeat + motion)
   const lastWriteRef = useRef(0);
-  const lastSentRef = useRef<{ lat: number; lng: number; acc?: number } | null>(null);
+  const lastSentRef = useRef<{ lat: number; lng: number; acc?: number } | null>(
+    null
+  );
 
   // smoothing refs
   const mySmoothRef = useRef<{ lat: number; lng: number } | null>(null);
-  const friendSmoothRef = useRef<Record<string, { lat: number; lng: number }>>({});
+  const friendSmoothRef = useRef<Record<string, { lat: number; lng: number }>>(
+    {}
+  );
   const distSmoothRef = useRef<Record<string, number | null>>({});
   const distWindowRef = useRef<Record<string, number[]>>({});
   const angleSmoothRef = useRef<Record<string, number | null>>({});
-  const lastGoodRef = useRef<Record<string, { pos: { lat: number; lng: number }; t: number }>>({});
+  const lastGoodRef = useRef<
+    Record<string, { pos: { lat: number; lng: number }; t: number }>
+  >({});
 
   // heading stability buffer
   const headingBufRef = useRef<number[]>([]);
@@ -189,17 +203,26 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
   // subscribe to members & locations
   useEffect(() => {
     if (!groupId) return;
-    const unsubMembers = onSnapshot(collection(db, 'groups', groupId, 'members'), (snap) => {
-      const m: any = {};
-      snap.forEach((d) => (m[d.id] = d.data()));
-      setMembers(m);
-    });
-    const unsubLoc = onSnapshot(collection(db, 'groups', groupId, 'locations'), (snap) => {
-      const l: any = {};
-      snap.forEach((d) => (l[d.id] = d.data()));
-      setLocations(l);
-    });
-    return () => { unsubMembers(); unsubLoc(); };
+    const unsubMembers = onSnapshot(
+      collection(db, 'groups', groupId, 'members'),
+      (snap) => {
+        const m: any = {};
+        snap.forEach((d) => (m[d.id] = d.data()));
+        setMembers(m);
+      }
+    );
+    const unsubLoc = onSnapshot(
+      collection(db, 'groups', groupId, 'locations'),
+      (snap) => {
+        const l: any = {};
+        snap.forEach((d) => (l[d.id] = d.data()));
+        setLocations(l);
+      }
+    );
+    return () => {
+      unsubMembers();
+      unsubLoc();
+    };
   }, [groupId, setMembers, setLocations]);
 
   // write my location (heartbeat every 15s; motion ≥ 2.5s)
@@ -208,7 +231,10 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
     const now = Date.now();
     const last = lastWriteRef.current;
     const moved = lastSentRef.current
-      ? haversine({ lat: geo.lat, lng: geo.lng }, { lat: lastSentRef.current.lat, lng: lastSentRef.current.lng })
+      ? haversine(
+          { lat: geo.lat, lng: geo.lng },
+          { lat: lastSentRef.current.lat, lng: lastSentRef.current.lng }
+        )
       : Infinity;
     const accImproved =
       lastSentRef.current?.acc != null && geo.accuracy != null
@@ -216,16 +242,26 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
         : true;
 
     const dueHeartbeat = now - last >= CFG.heartbeatMs;
-    const dueMotion = now - last >= CFG.motionWriteMinMs && (moved >= CFG.minMoveForWriteM || accImproved);
+    const dueMotion =
+      now - last >= CFG.motionWriteMinMs &&
+      (moved >= CFG.minMoveForWriteM || accImproved);
 
     if (!dueHeartbeat && !dueMotion) return;
 
     lastWriteRef.current = now;
-    lastSentRef.current = { lat: geo.lat, lng: geo.lng, acc: geo.accuracy ?? undefined };
+    lastSentRef.current = {
+      lat: geo.lat,
+      lng: geo.lng,
+      acc: geo.accuracy ?? undefined,
+    };
 
     const myRef = doc(db, 'groups', groupId, 'locations', me!.uid);
     const expireAt = new Date(Date.now() + 12 * 60 * 60 * 1000);
-    setDoc(myRef, { lat: geo.lat, lng: geo.lng, accuracy: geo.accuracy ?? null, updatedAt: Date.now(), expireAt }, { merge: true });
+    setDoc(
+      myRef,
+      { lat: geo.lat, lng: geo.lng, accuracy: geo.accuracy ?? null, updatedAt: Date.now(), expireAt },
+      { merge: true }
+    );
   }, [groupId, me, geo]);
 
   // compute others (distance & bearing)
@@ -420,26 +456,26 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
                   <polygon points="150,12 162,32 138,32" fill={o.member.color} />
                 </svg>
 
-				{/* Friend label — minimal */}
-<div
-  className="absolute -top-12 left-1/2 -translate-x-1/2 text-sm"
-  style={{ color: o.member.color }}
->
-  <div className="px-2 py-0.5 rounded-full bg-black/40 backdrop-blur flex items-center gap-1">
-    {o.member.avatarId && (
-      <span
-        className="inline-flex items-center justify-center rounded-full bg-slate-900/50"
-        style={{ width: 18, height: 18 }}
-      >
-        <AvatarIcon id={o.member.avatarId} size={18} />
-      </span>
-    )}
-    <span>{o.member.name}</span>
-    <span>· {formatDist(displayDist)}</span>
-    {o.age > 15_000 ? <span> · last {fmtLastSeen(o.age)} ago</span> : null}
-  </div>
-</div>
-</div>
+                {/* Friend label — minimal */}
+                <div
+                  className="absolute -top-12 left-1/2 -translate-x-1/2 text-sm"
+                  style={{ color: o.member.color }}
+                >
+                  <div className="px-2 py-0.5 rounded-full bg-black/40 backdrop-blur flex items-center gap-1">
+                    {o.member.avatarId && (
+                      <span
+                        className="inline-flex items-center justify-center rounded-full bg-slate-900/50"
+                        style={{ width: 18, height: 18 }}
+                      >
+                        <AvatarIcon id={o.member.avatarId} size={18} />
+                      </span>
+                    )}
+                    <span>{o.member.name}</span>
+                    <span>· {formatDist(displayDist)}</span>
+                    {o.age > 15_000 ? <span> · last {fmtLastSeen(o.age)} ago</span> : null}
+                  </div>
+                </div>
+              </div>
             );
           })}
 
@@ -463,73 +499,73 @@ export default function Compass({ onQuit }: { onQuit?: () => void }) {
         </div>
       </div>
 
-		{/* bottom chips + vibration toggle (separated rows) */}
-<div className="py-2">
-  {/* Friend chips — full width, scrollable */}
-  <div className="flex gap-2 overflow-x-auto pb-2">
-    {others.map((o) => (
-      <button
-        key={o.uid}
-        onClick={() => setFocused(focused === o.uid ? null : o.uid)}
-        className="px-3 py-2 rounded-2xl bg-slate-800 text-sm flex items-center gap-2"
-        style={{
-          border:
-            focused === o.uid ? `2px solid ${o.member.color}` : '2px solid transparent',
-        }}
-      >
-        {o.member.avatarId && (
-          <span
-            className="inline-flex items-center justify-center rounded-full bg-slate-900/50"
-            style={{ width: 18, height: 18 }}
-          >
-            <AvatarIcon id={o.member.avatarId} size={18} />
-          </span>
-        )}
-        <span
-          className="inline-block w-3 h-3 rounded-full"
-          style={{ background: o.member.color }}
-        />
-        {o.member.name}
-      </button>
-    ))}
-  </div>
+      {/* bottom chips + vibration toggle (separated rows) */}
+      <div className="py-2">
+        {/* Friend chips — full width, scrollable */}
+        <div className="flex gap-2 overflow-x-auto pb-2">
+          {others.map((o) => (
+            <button
+              key={o.uid}
+              onClick={() => setFocused(focused === o.uid ? null : o.uid)}
+              className="px-3 py-2 rounded-2xl bg-slate-800 text-sm flex items-center gap-2"
+              style={{
+                border:
+                  focused === o.uid ? `2px solid ${o.member.color}` : '2px solid transparent',
+              }}
+            >
+              {o.member.avatarId && (
+                <span
+                  className="inline-flex items-center justify-center rounded-full bg-slate-900/50"
+                  style={{ width: 18, height: 18 }}
+                >
+                  <AvatarIcon id={o.member.avatarId} size={18} />
+                </span>
+              )}
+              <span
+                className="inline-block w-3 h-3 rounded-full"
+                style={{ background: o.member.color }}
+              />
+              {o.member.name}
+            </button>
+          ))}
+        </div>
 
-  {/* Vibration toggle — separate row, only when a friend is focused */}
-  {focused ? (
-    <div className="flex items-center justify-between">
-      <span className="text-xs text-slate-400">
-        Ciblé&nbsp;:&nbsp;
-        <span className="text-slate-200">
-          {others.find((o) => o.uid === focused)?.member.name || '—'}
-        </span>
-      </span>
-      <div className="flex items-center gap-2">
-        <label className="text-xs flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={cuesOn}
-            onChange={(e) => setCuesOn(e.target.checked)}
-          />
-          Vibration
-        </label>
-        {cuesOn && typeof navigator.vibrate !== 'function' && (
-          <span className="text-[11px] text-slate-400">
-            (vibration non supportée)
-          </span>
-        )}
+        {/* Vibration toggle — separate row, only when a friend is focused */}
+        {focused ? (
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-slate-400">
+              Ciblé&nbsp;:&nbsp;
+              <span className="text-slate-200">
+                {others.find((o) => o.uid === focused)?.member.name || '—'}
+              </span>
+            </span>
+            <div className="flex items-center gap-2">
+              <label className="text-xs flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={cuesOn}
+                  onChange={(e) => setCuesOn(e.target.checked)}
+                />
+                Vibration
+              </label>
+              {cuesOn && typeof navigator.vibrate !== 'function' && (
+                <span className="text-[11px] text-slate-400">
+                  (vibration non supportée)
+                </span>
+              )}
+            </div>
+          </div>
+        ) : null}
       </div>
+
+      {showDiag && (
+        <Diagnostics
+          me={me}
+          geo={geo}
+          heading={deviceHeading ?? null}
+          groupId={groupId}
+        />
+      )}
     </div>
-  ) : null}
-</div>
-
-{showDiag && (
-  <Diagnostics
-    me={me}
-    geo={geo}
-    heading={deviceHeading ?? null}
-    groupId={groupId}
-  />
-)}
-
   );
 }

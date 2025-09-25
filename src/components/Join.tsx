@@ -19,16 +19,36 @@ function uniqueColor(existing: string[]) {
 }
 
 export default function Join({
-  onJoined
+  onJoined,
+  prefillGroupId
 }: {
-  onJoined: (groupId: string, me: { uid: string, name: string, color: string, avatarId: AvatarId }) => void
+  onJoined: (groupId: string, me: { uid: string, name: string, color: string, avatarId: AvatarId }) => void;
+  prefillGroupId?: string;
 }) {
-  const [mode, setMode] = useState<'create'|'join'>(location.hash.includes('create') ? 'create' : 'join');
-  const [groupId, setGroupId] = useState<string>('');
+  const initialMode: 'create' | 'join' =
+    (location.hash.includes('/join') || prefillGroupId) ? 'join'
+    : (location.hash.includes('create') ? 'create' : 'join');
+
+  const [mode, setMode] = useState<'create'|'join'>(initialMode);
+  const [groupId, setGroupId] = useState<string>(prefillGroupId || '');
   const [name, setName] = useState('');
   const [color, setColor] = useState('#3b82f6');
   const [avatarId, setAvatarId] = useState<AvatarId | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+
+  // Also parse ?gid from hash if present: "#/join?gid=ABC123"
+  useEffect(() => {
+    if (prefillGroupId) return;
+    const [, queryPart] = (location.hash || '').split('?');
+    if (queryPart) {
+      const params = new URLSearchParams(queryPart);
+      const gid = params.get('gid');
+      if (gid) {
+        setMode('join');
+        setGroupId(gid.toUpperCase());
+      }
+    }
+  }, [prefillGroupId]);
 
   useEffect(() => {
     if (mode === 'create' && groupId) {
@@ -53,16 +73,12 @@ export default function Join({
     const uid = await ensureAnonAuth();
     if (!groupId || !avatarId) return;
 
-    const memberRef = doc(db, 'groups', groupId.trim(), 'members', uid);
-    const me = {
-      uid,
-      name: name.trim(),
-      color,
-      avatarId
-    };
+    const gid = groupId.trim().toUpperCase();
+    const memberRef = doc(db, 'groups', gid, 'members', uid);
+    const me = { uid, name: name.trim(), color, avatarId };
 
     await setDoc(memberRef, me, { merge: true });
-    onJoined(groupId.trim(), me);
+    onJoined(gid, me);
   };
 
   const shareGroupLink = async () => {
